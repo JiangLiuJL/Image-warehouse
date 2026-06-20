@@ -21,12 +21,12 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -241,12 +241,21 @@ class MainWindow(QMainWindow):
         size_header.addWidget(add_size_button)
         form_layout.addLayout(size_header)
 
-        self.size_table = QTableWidget(0, 4)
-        self.size_table.setHorizontalHeaderLabels(["宽(cm)", "高(cm)", "DPI", "操作"])
-        self.size_table.verticalHeader().setVisible(False)
-        self.size_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.size_table.setMinimumHeight(188)
-        form_layout.addWidget(self.size_table)
+        self.size_rows: list[tuple[QFrame, QSpinBox, QSpinBox, QSpinBox]] = []
+        self.size_list = QWidget()
+        self.size_list.setObjectName("SizeList")
+        self.size_list_layout = QVBoxLayout(self.size_list)
+        self.size_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.size_list_layout.setSpacing(8)
+
+        size_scroll = QScrollArea()
+        size_scroll.setObjectName("SizeScroll")
+        size_scroll.setWidgetResizable(True)
+        size_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        size_scroll.setMinimumHeight(190)
+        size_scroll.setMaximumHeight(250)
+        size_scroll.setWidget(self.size_list)
+        form_layout.addWidget(size_scroll)
         for width, height in DEFAULT_SIZES:
             self._add_size_row(width, height, 150)
 
@@ -475,31 +484,49 @@ class MainWindow(QMainWindow):
         return self.shops[index]
 
     def _selected_sizes(self) -> list[SizeSpec]:
-        sizes: list[SizeSpec] = []
-        for row in range(self.size_table.rowCount()):
-            width_spin = self.size_table.cellWidget(row, 0)
-            height_spin = self.size_table.cellWidget(row, 1)
-            dpi_spin = self.size_table.cellWidget(row, 2)
-            if isinstance(width_spin, QSpinBox) and isinstance(height_spin, QSpinBox) and isinstance(dpi_spin, QSpinBox):
-                sizes.append(SizeSpec(width_spin.value(), height_spin.value(), dpi_spin.value()))
-        return sizes
+        return [
+            SizeSpec(width_spin.value(), height_spin.value(), dpi_spin.value())
+            for _row_frame, width_spin, height_spin, dpi_spin in self.size_rows
+        ]
 
     def _add_size_row(self, width: int, height: int, dpi: int) -> None:
-        row = self.size_table.rowCount()
-        self.size_table.insertRow(row)
-        self.size_table.setCellWidget(row, 0, self._size_spin(width, 1, 300))
-        self.size_table.setCellWidget(row, 1, self._size_spin(height, 1, 300))
-        self.size_table.setCellWidget(row, 2, self._size_spin(dpi, 72, 600))
+        row_frame = QFrame()
+        row_frame.setObjectName("SizeRow")
+        row_layout = QHBoxLayout(row_frame)
+        row_layout.setContentsMargins(10, 8, 10, 8)
+        row_layout.setSpacing(8)
 
-        delete_button = QToolButton()
+        width_spin = self._size_spin(width, 1, 300)
+        height_spin = self._size_spin(height, 1, 300)
+        dpi_spin = self._size_spin(dpi, 72, 600)
+
+        row_layout.addWidget(QLabel("宽"))
+        row_layout.addWidget(width_spin)
+        row_layout.addWidget(QLabel("cm"))
+        row_layout.addSpacing(6)
+        row_layout.addWidget(QLabel("高"))
+        row_layout.addWidget(height_spin)
+        row_layout.addWidget(QLabel("cm"))
+        row_layout.addSpacing(6)
+        row_layout.addWidget(QLabel("DPI"))
+        row_layout.addWidget(dpi_spin)
+        row_layout.addStretch()
+
+        delete_button = QPushButton()
+        delete_button.setObjectName("DeleteButton")
         delete_button.setText("删除")
-        delete_button.clicked.connect(lambda checked=False, button=delete_button: self._delete_size_row(button))
-        self.size_table.setCellWidget(row, 3, delete_button)
+        delete_button.clicked.connect(lambda checked=False, frame=row_frame: self._delete_size_row(frame))
+        row_layout.addWidget(delete_button)
 
-    def _delete_size_row(self, button: QToolButton) -> None:
-        for row in range(self.size_table.rowCount()):
-            if self.size_table.cellWidget(row, 3) is button:
-                self.size_table.removeRow(row)
+        self.size_rows.append((row_frame, width_spin, height_spin, dpi_spin))
+        self.size_list_layout.addWidget(row_frame)
+
+    def _delete_size_row(self, row_frame: QFrame) -> None:
+        for index, (frame, _width, _height, _dpi) in enumerate(self.size_rows):
+            if frame is row_frame:
+                self.size_rows.pop(index)
+                frame.setParent(None)
+                frame.deleteLater()
                 return
 
     def _size_spin(self, value: int, minimum: int, maximum: int) -> QSpinBox:
@@ -507,6 +534,7 @@ class MainWindow(QMainWindow):
         spin.setRange(minimum, maximum)
         spin.setValue(value)
         spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spin.setFixedWidth(72)
         return spin
 
     def _refresh_all(self) -> None:
@@ -708,6 +736,18 @@ class MainWindow(QMainWindow):
             #Preview:focus {
                 border: 2px solid #2f6f5f;
             }
+            #SizeScroll {
+                background: transparent;
+                border: none;
+            }
+            #SizeList {
+                background: transparent;
+            }
+            #SizeRow {
+                background: #f7faf8;
+                border: 1px solid #dfe7e2;
+                border-radius: 8px;
+            }
             QPushButton {
                 background: #ffffff;
                 border: 1px solid #cbd6d1;
@@ -725,6 +765,15 @@ class MainWindow(QMainWindow):
             }
             #PrimaryButton:hover {
                 background: #285f52;
+            }
+            #DeleteButton {
+                color: #9a3028;
+                background: #fff8f7;
+                border: 1px solid #efc8c3;
+                padding: 7px 10px;
+            }
+            #DeleteButton:hover {
+                background: #fdecea;
             }
             QLineEdit, QComboBox, QSpinBox {
                 background: #ffffff;
