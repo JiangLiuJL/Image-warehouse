@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import sys
 import os
+from io import BytesIO
 from ctypes import c_uint, c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
 from datetime import datetime
@@ -10,7 +11,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QImage, QIntValidator, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QIntValidator, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -68,7 +69,10 @@ class PasteImagePreview(QLabel):
 
     def set_preview_pixmap(self, pixmap: QPixmap) -> None:
         self._pixmap = pixmap
+        self.clear()
+        self.setText("")
         self._render_pixmap()
+        self.update()
 
     def clear_preview(self, text: str) -> None:
         self._pixmap = None
@@ -106,6 +110,7 @@ class PasteImagePreview(QLabel):
     def _render_pixmap(self) -> None:
         if self._pixmap is None or self._pixmap.isNull():
             return
+        self.clear()
         self.setPixmap(
             self._pixmap.scaled(
                 self.size(),
@@ -628,24 +633,27 @@ class MainWindow(QMainWindow):
             f"{info.width_px} x {info.height_px} px | DPI：{dpi_text} | {info.file_format}"
         )
 
-        pixmap = self._load_preview_pixmap(path)
+        pixmap, preview_error = self._load_preview_pixmap(path)
         if pixmap.isNull():
-            self.preview_label.clear_preview("图片预览失败，但文件已选择。")
+            self.preview_label.clear_preview(f"图片预览失败，但文件已选择。\n{preview_error}")
         else:
             self.preview_label.set_preview_pixmap(pixmap)
         self.preview_label.setFocus()
         self.status_label.setText(f"已选择图片：{path.name}")
 
-    def _load_preview_pixmap(self, path: Path) -> QPixmap:
+    def _load_preview_pixmap(self, path: Path) -> tuple[QPixmap, str]:
         try:
             with Image.open(path) as image:
                 image = ImageOps.exif_transpose(image).convert("RGBA")
-                width, height = image.size
-                data = image.tobytes("raw", "RGBA")
-                qimage = QImage(data, width, height, width * 4, QImage.Format.Format_RGBA8888)
-                return QPixmap.fromImage(qimage.copy())
-        except Exception:
-            return QPixmap()
+                image.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                pixmap = QPixmap()
+                if pixmap.loadFromData(buffer.getvalue(), "PNG"):
+                    return pixmap, ""
+                return QPixmap(), "Qt 无法从缩略图数据加载预览。"
+        except Exception as error:
+            return QPixmap(), str(error)
 
     def _generate_code(self) -> None:
         shop = self._selected_shop()
