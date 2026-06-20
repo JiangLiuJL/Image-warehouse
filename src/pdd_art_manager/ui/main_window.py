@@ -7,6 +7,7 @@ from ctypes import c_uint, c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QImageReader, QIntValidator, QKeySequence, QPixmap, QShortcut
@@ -456,9 +457,9 @@ class MainWindow(QMainWindow):
     def _paste_image_from_clipboard(self) -> None:
         clipboard = QApplication.clipboard()
         mime_data = clipboard.mimeData()
-        path = self._image_path_from_clipboard_mime(mime_data)
+        path = self._image_path_from_windows_clipboard()
         if path is None:
-            path = self._image_path_from_windows_clipboard()
+            path = self._image_path_from_clipboard_mime(mime_data)
         if path is not None:
             self._set_selected_image(path)
             self.status_label.setText(f"已粘贴图片文件：{path.name}")
@@ -510,7 +511,10 @@ class MainWindow(QMainWindow):
             if not text or text.startswith("#"):
                 continue
             if text.lower().startswith("file:///"):
-                text = text[8:] if text.startswith("file:////") else text[7:]
+                parsed = urlparse(text)
+                text = unquote(parsed.path)
+                if len(text) >= 3 and text[0] == "/" and text[2] == ":":
+                    text = text[1:]
                 text = text.replace("/", "\\")
             path = Path(text)
             if self._is_supported_image_path(path):
@@ -569,6 +573,13 @@ class MainWindow(QMainWindow):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(report, encoding="utf-8")
         self.status_label.setText(f"诊断已保存：{path}")
+        image_path = self._image_path_from_windows_clipboard()
+        if image_path is None:
+            image_path = self._image_path_from_clipboard_mime(QApplication.clipboard().mimeData())
+        if image_path is not None:
+            self._set_selected_image(image_path)
+            self._info(f"诊断已保存，并已导入图片：\n{image_path}")
+            return
         self._info(f"诊断已保存到：\n{path}")
 
     def _open_diagnostics_folder(self) -> None:
