@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import shutil
+import sys
+from ctypes import windll
+from ctypes.wintypes import MAX_PATH
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImageReader, QIntValidator, QKeySequence, QPixmap
+from PySide6.QtGui import QImageReader, QIntValidator, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -146,6 +149,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1040, 680)
         self._apply_style()
         self.setCentralWidget(self._build_shell())
+        paste_shortcut = QShortcut(QKeySequence.StandardKey.Paste, self)
+        paste_shortcut.activated.connect(self._paste_image_from_clipboard)
         self._refresh_all()
 
     def _build_shell(self) -> QWidget:
@@ -381,15 +386,13 @@ class MainWindow(QMainWindow):
     def _paste_image_from_clipboard(self) -> None:
         clipboard = QApplication.clipboard()
         mime_data = clipboard.mimeData()
-        if mime_data.hasUrls():
-            for url in mime_data.urls():
-                if not url.isLocalFile():
-                    continue
-                path = Path(url.toLocalFile())
-                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
-                    self._set_selected_image(path)
-                    self.status_label.setText(f"已粘贴图片文件：{path.name}")
-                    return
+        path = self._image_path_from_clipboard_mime(mime_data)
+        if path is None:
+            path = self._image_path_from_windows_clipboard()
+        if path is not None:
+            self._set_selected_image(path)
+            self.status_label.setText(f"已粘贴图片文件：{path.name}")
+            return
 
         image = clipboard.image()
         if image.isNull():
@@ -403,6 +406,58 @@ class MainWindow(QMainWindow):
             return
         self._set_selected_image(path)
         self.status_label.setText(f"已粘贴图片：{path.name}")
+
+    def _image_path_from_clipboard_mime(self, mime_data) -> Path | None:  # noqa: ANN001
+        candidates: list[str] = []
+
+        if mime_data.hasUrls():
+            candidates.extend(url.toLocalFile() for url in mime_data.urls() if url.isLocalFile())
+
+        if mime_data.hasText():
+            candidates.extend(mime_data.text().replace("\r", "\n").split("\n"))
+
+        if mime_data.hasFormat("text/uri-list"):
+            raw = bytes(mime_data.data("text/uri-list")).decode("utf-8", errors="ignore")
+            candidates.extend(raw.replace("\r", "\n").split("\n"))
+
+        for candidate in candidates:
+            text = candidate.strip().strip('"')
+            if not text or text.startswith("#"):
+                continue
+            if text.lower().startswith("file:///"):
+                text = text[8:] if text.startswith("file:////") else text[7:]
+                text = text.replace("/", "\\")
+            path = Path(text)
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
+                return path
+        return None
+
+    def _image_path_from_windows_clipboard(self) -> Path | None:
+        if sys.platform != "win32":
+            return None
+
+        cf_hdrop = 15
+        user32 = windll.user32
+        shell32 = windll.shell32
+
+        if not user32.IsClipboardFormatAvailable(cf_hdrop):
+            return None
+        if not user32.OpenClipboard(None):
+            return None
+        try:
+            handle = user32.GetClipboardData(cf_hdrop)
+            if not handle:
+                return None
+            file_count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
+            for index in range(file_count):
+                buffer = "\0" * MAX_PATH
+                shell32.DragQueryFileW(handle, index, buffer, MAX_PATH)
+                path = Path(buffer.rstrip("\0"))
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
+                    return path
+        finally:
+            user32.CloseClipboard()
+        return None
 
     def _set_selected_image(self, path: Path) -> None:
         self.selected_image = path
