@@ -53,6 +53,7 @@ DEFAULT_SIZES = [(20, 30), (30, 40), (40, 60)]
 
 class PasteImagePreview(QLabel):
     paste_requested = Signal()
+    image_dropped = Signal(Path)
 
     def __init__(self, text: str) -> None:
         super().__init__(text)
@@ -60,6 +61,7 @@ class PasteImagePreview(QLabel):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(True)
+        self.setAcceptDrops(True)
 
     def set_preview_pixmap(self, pixmap: QPixmap) -> None:
         self._pixmap = pixmap
@@ -84,6 +86,20 @@ class PasteImagePreview(QLabel):
         super().resizeEvent(event)
         self._render_pixmap()
 
+    def dragEnterEvent(self, event) -> None:  # noqa: ANN001
+        if self._image_path_from_drop(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: ANN001
+        path = self._image_path_from_drop(event.mimeData())
+        if path is None:
+            event.ignore()
+            return
+        self.image_dropped.emit(path)
+        event.acceptProposedAction()
+
     def _render_pixmap(self) -> None:
         if self._pixmap is None or self._pixmap.isNull():
             return
@@ -94,6 +110,17 @@ class PasteImagePreview(QLabel):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
+
+    def _image_path_from_drop(self, mime_data) -> Path | None:  # noqa: ANN001
+        if not mime_data.hasUrls():
+            return None
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
+                return path
+        return None
 
 
 class SizeNumberInput(QWidget):
@@ -252,6 +279,7 @@ class MainWindow(QMainWindow):
         self.preview_label.setMinimumSize(360, 430)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.preview_label.paste_requested.connect(self._paste_image_from_clipboard)
+        self.preview_label.image_dropped.connect(self._set_dropped_image)
         left_layout.addWidget(self.preview_label)
         choose = QPushButton("选择图片")
         choose.clicked.connect(self._choose_image)
@@ -406,6 +434,10 @@ class MainWindow(QMainWindow):
             return
         self._set_selected_image(path)
         self.status_label.setText(f"已粘贴图片：{path.name}")
+
+    def _set_dropped_image(self, path: Path) -> None:
+        self._set_selected_image(path)
+        self.status_label.setText(f"已拖入图片：{path.name}")
 
     def _image_path_from_clipboard_mime(self, mime_data) -> Path | None:  # noqa: ANN001
         candidates: list[str] = []
