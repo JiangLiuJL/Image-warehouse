@@ -656,7 +656,7 @@ class MainWindow(QMainWindow):
         try:
             self.selected_image = path
             info = read_image_info(path)
-            dpi_text = f"{info.dpi_x:g} x {info.dpi_y:g}" if info.dpi_x and info.dpi_y else "未设置"
+            dpi_text = self._format_dpi(info.dpi_x, info.dpi_y)
             self.image_info_label.setText(
                 f"{info.width_px} x {info.height_px} px | DPI：{dpi_text} | {info.file_format}"
             )
@@ -684,6 +684,14 @@ class MainWindow(QMainWindow):
                 return QPixmap(), "Qt 无法从缩略图数据加载预览。"
         except Exception as error:
             return QPixmap(), str(error)
+
+    def _format_dpi(self, dpi_x: float | None, dpi_y: float | None) -> str:
+        if not dpi_x or not dpi_y:
+            return "未设置"
+        try:
+            return f"{float(dpi_x):g} x {float(dpi_y):g}"
+        except (TypeError, ValueError):
+            return f"{dpi_x} x {dpi_y}"
 
     def _report_runtime_error(self, title: str, error: Exception) -> None:
         path = DATA_DIR / "last_error.txt"
