@@ -316,8 +316,11 @@ class MainWindow(QMainWindow):
         choose.clicked.connect(self._choose_image)
         paste_button = QPushButton("粘贴图片")
         paste_button.clicked.connect(self._paste_image_from_clipboard)
+        diagnose_button = QPushButton("诊断粘贴")
+        diagnose_button.clicked.connect(self._show_clipboard_diagnostics)
         upload_actions.addWidget(choose)
         upload_actions.addWidget(paste_button)
+        upload_actions.addWidget(diagnose_button)
         left_layout.addLayout(upload_actions)
 
         right = self._panel()
@@ -511,8 +514,14 @@ class MainWindow(QMainWindow):
         return None
 
     def _image_path_from_windows_clipboard(self) -> Path | None:
+        for path in self._windows_clipboard_file_paths():
+            if self._is_supported_image_path(path):
+                return path
+        return None
+
+    def _windows_clipboard_file_paths(self) -> list[Path]:
         if sys.platform != "win32":
-            return None
+            return []
 
         cf_hdrop = 15
         user32 = windll.user32
@@ -526,24 +535,53 @@ class MainWindow(QMainWindow):
         shell32.DragQueryFileW.restype = int
 
         if not user32.IsClipboardFormatAvailable(cf_hdrop):
-            return None
+            return []
         if not user32.OpenClipboard(None):
-            return None
+            return []
         try:
             handle = user32.GetClipboardData(cf_hdrop)
             if not handle:
-                return None
+                return []
+            paths: list[Path] = []
             file_count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
             for index in range(file_count):
                 length = shell32.DragQueryFileW(handle, index, None, 0)
                 buffer = create_unicode_buffer(max(length + 1, MAX_PATH))
                 shell32.DragQueryFileW(handle, index, buffer, len(buffer))
-                path = Path(buffer.value)
-                if self._is_supported_image_path(path):
-                    return path
+                paths.append(Path(buffer.value))
+            return paths
         finally:
             user32.CloseClipboard()
-        return None
+
+    def _show_clipboard_diagnostics(self) -> None:
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        lines = ["剪贴板诊断：", ""]
+
+        lines.append(f"Qt hasImage: {not clipboard.image().isNull()}")
+        lines.append(f"Qt hasUrls: {mime_data.hasUrls()}")
+        if mime_data.hasUrls():
+            for url in mime_data.urls():
+                lines.append(f"  URL: {url.toString()} | local={url.isLocalFile()} | file={url.toLocalFile()}")
+
+        lines.append(f"Qt hasText: {mime_data.hasText()}")
+        if mime_data.hasText():
+            text = mime_data.text()
+            lines.append(f"  Text: {text[:500]}")
+
+        lines.append("Qt formats:")
+        for fmt in mime_data.formats():
+            data = bytes(mime_data.data(fmt))
+            preview = data[:120].hex(" ")
+            lines.append(f"  {fmt} | {len(data)} bytes | {preview}")
+
+        win_paths = self._windows_clipboard_file_paths()
+        lines.append("")
+        lines.append(f"Windows CF_HDROP files: {len(win_paths)}")
+        for path in win_paths:
+            lines.append(f"  {path} | exists={path.exists()} | supported={self._is_supported_image_path(path)}")
+
+        QMessageBox.information(self, "剪贴板诊断", "\n".join(lines))
 
     def _is_supported_image_path(self, path: Path) -> bool:
         return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists()
