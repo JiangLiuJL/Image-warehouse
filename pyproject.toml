@@ -1,0 +1,16 @@
+[project]
+name = "pdd-art-manager"
+version = "0.1.0"
+description = "Local desktop app for managing decorative art images, shop folders, codes, and generated sizes."
+requires-python = ">=3.12"
+dependencies = [
+  "Pillow>=10.4.0",
+  "PySide6>=6.7.0",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
