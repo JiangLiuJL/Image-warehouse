@@ -469,29 +469,39 @@ class MainWindow(QMainWindow):
             self._set_selected_image(Path(path))
 
     def _paste_image_from_clipboard(self) -> None:
-        clipboard = QApplication.clipboard()
-        mime_data = clipboard.mimeData()
-        path = self._image_path_from_windows_clipboard()
-        if path is None:
-            path = self._image_path_from_clipboard_mime(mime_data)
-        if path is not None:
-            cached_path = self._cache_clipboard_file(path)
-            self._set_selected_image(cached_path)
-            self.status_label.setText(f"已粘贴图片文件：{path.name}")
-            return
+        try:
+            self.status_label.setText("正在读取剪贴板...")
+            QApplication.processEvents()
 
-        image = clipboard.image()
-        if image.isNull():
-            self._warn("剪贴板里没有可用图片。可以复制图片文件，或复制截图/网页图片后再粘贴。")
-            return
-        paste_dir = DATA_DIR / "clipboard_uploads"
-        paste_dir.mkdir(parents=True, exist_ok=True)
-        path = paste_dir / f"粘贴图片_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        if not image.save(str(path), "PNG"):
-            self._warn("保存粘贴图片失败。")
-            return
-        self._set_selected_image(path)
-        self.status_label.setText(f"已粘贴图片：{path.name}")
+            clipboard = QApplication.clipboard()
+            mime_data = clipboard.mimeData()
+            path = self._image_path_from_windows_clipboard()
+            if path is None:
+                path = self._image_path_from_clipboard_mime(mime_data)
+            if path is not None:
+                self.status_label.setText(f"已找到剪贴板图片文件：{path}")
+                QApplication.processEvents()
+                cached_path = self._cache_clipboard_file(path)
+                self.status_label.setText(f"已缓存图片文件：{cached_path.name}")
+                QApplication.processEvents()
+                self._set_selected_image(cached_path)
+                self.status_label.setText(f"已粘贴图片文件：{path.name}")
+                return
+
+            image = clipboard.image()
+            if image.isNull():
+                self._warn("剪贴板里没有可用图片。可以复制图片文件，或复制截图/网页图片后再粘贴。")
+                return
+            paste_dir = DATA_DIR / "clipboard_uploads"
+            paste_dir.mkdir(parents=True, exist_ok=True)
+            path = paste_dir / f"粘贴图片_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            if not image.save(str(path), "PNG"):
+                self._warn("保存粘贴图片失败。")
+                return
+            self._set_selected_image(path)
+            self.status_label.setText(f"已粘贴图片：{path.name}")
+        except Exception as error:
+            self._report_runtime_error("粘贴图片失败", error)
 
     def _image_path_from_drop(self, mime_data) -> Path | None:  # noqa: ANN001
         if not mime_data.hasUrls():
@@ -643,20 +653,23 @@ class MainWindow(QMainWindow):
         return cached_path
 
     def _set_selected_image(self, path: Path) -> None:
-        self.selected_image = path
-        info = read_image_info(path)
-        dpi_text = f"{info.dpi_x:g} x {info.dpi_y:g}" if info.dpi_x and info.dpi_y else "未设置"
-        self.image_info_label.setText(
-            f"{info.width_px} x {info.height_px} px | DPI：{dpi_text} | {info.file_format}"
-        )
+        try:
+            self.selected_image = path
+            info = read_image_info(path)
+            dpi_text = f"{info.dpi_x:g} x {info.dpi_y:g}" if info.dpi_x and info.dpi_y else "未设置"
+            self.image_info_label.setText(
+                f"{info.width_px} x {info.height_px} px | DPI：{dpi_text} | {info.file_format}"
+            )
 
-        pixmap, preview_error = self._load_preview_pixmap(path)
-        if pixmap.isNull():
-            self.preview_label.clear_preview(f"图片预览失败，但文件已选择。\n{preview_error}")
-        else:
-            self.preview_label.set_preview_pixmap(pixmap)
-        self.preview_label.setFocus()
-        self.status_label.setText(f"已选择图片：{path.name}，预览尺寸：{pixmap.width()} x {pixmap.height()}")
+            pixmap, preview_error = self._load_preview_pixmap(path)
+            if pixmap.isNull():
+                self.preview_label.clear_preview(f"图片预览失败，但文件已选择。\n{preview_error}")
+            else:
+                self.preview_label.set_preview_pixmap(pixmap)
+            self.preview_label.setFocus()
+            self.status_label.setText(f"已选择图片：{path.name}，预览尺寸：{pixmap.width()} x {pixmap.height()}")
+        except Exception as error:
+            self._report_runtime_error("选择图片失败", error)
 
     def _load_preview_pixmap(self, path: Path) -> tuple[QPixmap, str]:
         try:
@@ -671,6 +684,14 @@ class MainWindow(QMainWindow):
                 return QPixmap(), "Qt 无法从缩略图数据加载预览。"
         except Exception as error:
             return QPixmap(), str(error)
+
+    def _report_runtime_error(self, title: str, error: Exception) -> None:
+        path = DATA_DIR / "last_error.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        message = f"{title}：{error!r}"
+        path.write_text(message, encoding="utf-8")
+        self.status_label.setText(f"{title}，错误已保存：{path}")
+        self._warn(f"{message}\n\n错误已保存到：\n{path}")
 
     def _generate_code(self) -> None:
         shop = self._selected_shop()
