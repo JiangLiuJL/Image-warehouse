@@ -1,42 +1,43 @@
-# 装饰画图片管理软件
+# Image Warehouse
 
-这是一个面向拼多多装饰画商家的 Windows 本地桌面软件项目。
+A Windows desktop tool for Pinduoduo decorative art sellers to manage shop-specific image folders, generate standardized image codes, create multiple print sizes with custom DPI, and keep local JSON/CSV records without using a database.
 
-第一版目标：
+## Project Goals
 
-- 管理多个店铺的图片文件夹
-- 上传图片并绑定编码
-- 自动生成规范图片编码
-- 一张原图生成多个尺寸版本
-- 读取图片像素和 DPI
-- 使用本地 JSON / CSV 保存设置和图片索引
-- 不使用数据库
+- Manage image folders for multiple shops
+- Upload images and bind them to standardized codes
+- Generate image codes automatically
+- Create multiple print-size versions from one source image
+- Read image pixels and DPI
+- Store local settings with JSON
+- Store the image index with CSV files that can be opened in Excel
+- Avoid using a database in the first version
 
-## 技术栈
+## Tech Stack
 
 - Python 3.12+
-- PySide6：桌面软件界面
-- Pillow：图片读取、缩放、DPI 设置
-- CSV / JSON：本地记录文件
-- PyInstaller：后续打包为 Windows 可执行文件
+- PySide6 for the Windows desktop interface
+- Pillow for image metadata, resizing, and DPI output
+- JSON / CSV for local records
+- PyInstaller for future Windows `.exe` packaging
 
-## 项目结构
+## Structure
 
 ```text
 src/pdd_art_manager
-├─ app.py                 # 软件启动入口
-├─ config.py              # 路径和默认配置
-├─ models.py              # 店铺、图片、尺寸等数据结构
+├─ app.py                 # App entry point
+├─ config.py              # Paths and default config
+├─ models.py              # Shop, image, and size data models
 ├─ services
-│  ├─ code_generator.py   # 图片编码生成
-│  ├─ image_processor.py  # 图片读取和多尺寸生成
-│  ├─ index_store.py      # CSV 图片索引
-│  └─ shop_store.py       # JSON 店铺配置
+│  ├─ code_generator.py   # Image code generation
+│  ├─ image_processor.py  # Image metadata and size generation
+│  ├─ index_store.py      # CSV image index
+│  └─ shop_store.py       # JSON shop config
 └─ ui
-   └─ main_window.py      # 主窗口
+   └─ main_window.py      # Main window
 ```
 
-## 本地运行
+## Run Locally
 
 ```powershell
 python -m venv .venv
@@ -45,9 +46,9 @@ pip install -r requirements.txt
 python -m pdd_art_manager.app
 ```
 
-## 数据保存方式
+## Local Data
 
-软件不使用数据库，默认本地记录文件如下：
+The app does not use a database. It stores local records in:
 
 ```text
 data/
@@ -56,5 +57,5 @@ data/
 └─ image_index.csv
 ```
 
-图片文件保存在用户为每个店铺指定的文件夹中。
+Image files are stored in the folders selected for each shop.
 
