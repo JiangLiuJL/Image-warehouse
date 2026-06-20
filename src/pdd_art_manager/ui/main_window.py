@@ -84,17 +84,17 @@ class MainWindow(QMainWindow):
         side_layout.setContentsMargins(18, 22, 18, 18)
         side_layout.setSpacing(10)
 
-        brand = QLabel("Image Warehouse")
+        brand = QLabel("图片仓库")
         brand.setObjectName("Brand")
-        caption = QLabel("Decorative art manager")
+        caption = QLabel("装饰画图片管理")
         caption.setObjectName("Caption")
 
         self.nav_buttons: list[QPushButton] = []
         nav_items = [
-            ("Overview", 0),
-            ("Upload", 1),
-            ("Shops", 2),
-            ("Library", 3),
+            ("总览", 0),
+            ("上传图片", 1),
+            ("店铺管理", 2),
+            ("图片库", 3),
         ]
         side_layout.addWidget(brand)
         side_layout.addWidget(caption)
@@ -108,7 +108,7 @@ class MainWindow(QMainWindow):
             side_layout.addWidget(button)
         side_layout.addStretch()
 
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("就绪")
         self.status_label.setObjectName("SideStatus")
         self.status_label.setWordWrap(True)
         side_layout.addWidget(self.status_label)
@@ -129,13 +129,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setSpacing(18)
 
-        layout.addWidget(self._page_title("Overview", "A quiet workspace for shop folders, codes, and print sizes."))
+        layout.addWidget(self._page_title("总览", "管理店铺文件夹、图片编码和打印尺寸。"))
 
         metrics = QGridLayout()
         metrics.setSpacing(14)
-        self.shop_count_label = self._metric("0", "Shops")
-        self.image_count_label = self._metric("0", "Generated images")
-        self.data_path_label = self._metric(str(DATA_DIR), "Local records")
+        self.shop_count_label = self._metric("0", "店铺数量")
+        self.image_count_label = self._metric("0", "已生成图片")
+        self.data_path_label = self._metric(str(DATA_DIR), "本地记录位置")
         metrics.addWidget(self.shop_count_label, 0, 0)
         metrics.addWidget(self.image_count_label, 0, 1)
         metrics.addWidget(self.data_path_label, 0, 2)
@@ -143,13 +143,13 @@ class MainWindow(QMainWindow):
 
         quick = self._panel()
         quick_layout = QVBoxLayout(quick)
-        quick_layout.addWidget(self._section_title("Next actions"))
+        quick_layout.addWidget(self._section_title("常用操作"))
         actions = QHBoxLayout()
-        upload = QPushButton("Upload image")
+        upload = QPushButton("上传图片")
         upload.clicked.connect(lambda: self._set_page(1))
-        shops = QPushButton("Manage shops")
+        shops = QPushButton("管理店铺")
         shops.clicked.connect(lambda: self._set_page(2))
-        library = QPushButton("Open library")
+        library = QPushButton("打开图片库")
         library.clicked.connect(lambda: self._set_page(3))
         for button in (upload, shops, library):
             button.setMinimumHeight(42)
@@ -163,58 +163,58 @@ class MainWindow(QMainWindow):
         page = self._page()
         layout = QVBoxLayout(page)
         layout.setSpacing(16)
-        layout.addWidget(self._page_title("Upload", "Choose a shop, inspect the image, and generate print-ready sizes."))
+        layout.addWidget(self._page_title("上传图片", "选择店铺和图片，读取图片信息并生成可打印尺寸。"))
 
         body = QHBoxLayout()
         body.setSpacing(16)
 
         left = self._panel()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(self._section_title("Source image"))
-        self.preview_label = QLabel("No image selected")
+        left_layout.addWidget(self._section_title("原图"))
+        self.preview_label = QLabel("未选择图片")
         self.preview_label.setObjectName("Preview")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(360, 430)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left_layout.addWidget(self.preview_label)
-        choose = QPushButton("Choose image")
+        choose = QPushButton("选择图片")
         choose.clicked.connect(self._choose_image)
         left_layout.addWidget(choose)
 
         right = self._panel()
         form_layout = QVBoxLayout(right)
-        form_layout.addWidget(self._section_title("Generate files"))
+        form_layout.addWidget(self._section_title("生成文件"))
 
         form = QFormLayout()
         self.upload_shop_combo = QComboBox()
         self.base_code_input = QLineEdit()
-        self.base_code_input.setPlaceholderText("Auto-generated, such as SG-00AF")
-        self.image_info_label = QLabel("Select an image to read pixels and DPI.")
+        self.base_code_input.setPlaceholderText("自动生成，例如 SG-00AF")
+        self.image_info_label = QLabel("请选择图片，软件会读取像素和 DPI。")
         self.image_info_label.setWordWrap(True)
 
         code_row = QHBoxLayout()
         code_row.addWidget(self.base_code_input)
-        code_button = QPushButton("Generate code")
+        code_button = QPushButton("生成编码")
         code_button.clicked.connect(self._generate_code)
         code_row.addWidget(code_button)
 
-        form.addRow("Shop", self.upload_shop_combo)
-        form.addRow("Base code", code_row)
-        form.addRow("Image info", self.image_info_label)
+        form.addRow("店铺", self.upload_shop_combo)
+        form.addRow("基础编码", code_row)
+        form.addRow("图片信息", self.image_info_label)
         form_layout.addLayout(form)
 
-        form_layout.addWidget(self._section_title("Sizes"))
+        form_layout.addWidget(self._section_title("尺寸"))
         self.size_checks: list[tuple[QCheckBox, int, int]] = []
         size_grid = QGridLayout()
         for index, (width, height) in enumerate(DEFAULT_SIZES):
-            checkbox = QCheckBox(f"{width} x {height} cm")
+            checkbox = QCheckBox(f"{width} x {height} 厘米")
             checkbox.setChecked(index == 0)
             self.size_checks.append((checkbox, width, height))
             size_grid.addWidget(checkbox, index // 2, index % 2)
         form_layout.addLayout(size_grid)
 
         custom_row = QHBoxLayout()
-        self.custom_size_check = QCheckBox("Custom")
+        self.custom_size_check = QCheckBox("自定义")
         self.custom_width = QSpinBox()
         self.custom_width.setRange(1, 300)
         self.custom_width.setValue(50)
@@ -222,9 +222,9 @@ class MainWindow(QMainWindow):
         self.custom_height.setRange(1, 300)
         self.custom_height.setValue(70)
         custom_row.addWidget(self.custom_size_check)
-        custom_row.addWidget(QLabel("W"))
+        custom_row.addWidget(QLabel("宽"))
         custom_row.addWidget(self.custom_width)
-        custom_row.addWidget(QLabel("H"))
+        custom_row.addWidget(QLabel("高"))
         custom_row.addWidget(self.custom_height)
         form_layout.addLayout(custom_row)
 
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
         dpi_row.addStretch()
         form_layout.addLayout(dpi_row)
 
-        self.generate_button = QPushButton("Generate selected sizes")
+        self.generate_button = QPushButton("生成所选尺寸")
         self.generate_button.setObjectName("PrimaryButton")
         self.generate_button.setMinimumHeight(44)
         self.generate_button.clicked.connect(self._generate_images)
@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
         page = self._page()
         layout = QVBoxLayout(page)
         layout.setSpacing(16)
-        layout.addWidget(self._page_title("Shops", "Each shop can keep its own source and generated image folders."))
+        layout.addWidget(self._page_title("店铺管理", "每个店铺可以设置独立的原图文件夹和成品图文件夹。"))
 
         panel = self._panel()
         panel_layout = QVBoxLayout(panel)
@@ -268,21 +268,21 @@ class MainWindow(QMainWindow):
         original_row = self._path_row(self.original_folder_input)
         output_row = self._path_row(self.output_folder_input)
 
-        form.addRow("Shop name", self.shop_name_input)
-        form.addRow("Short name", self.shop_short_input)
-        form.addRow("Prefix", self.shop_prefix_input)
-        form.addRow("Source folder", original_row)
-        form.addRow("Output folder", output_row)
+        form.addRow("店铺名称", self.shop_name_input)
+        form.addRow("店铺简称", self.shop_short_input)
+        form.addRow("店铺前缀", self.shop_prefix_input)
+        form.addRow("原图文件夹", original_row)
+        form.addRow("成品图文件夹", output_row)
         panel_layout.addLayout(form)
 
-        save_button = QPushButton("Save shop")
+        save_button = QPushButton("保存店铺")
         save_button.setObjectName("PrimaryButton")
         save_button.clicked.connect(self._save_shop)
         panel_layout.addWidget(save_button)
         layout.addWidget(panel)
 
         self.shop_table = QTableWidget(0, 5)
-        self.shop_table.setHorizontalHeaderLabels(["Shop", "Prefix", "Source folder", "Output folder", "Enabled"])
+        self.shop_table.setHorizontalHeaderLabels(["店铺", "前缀", "原图文件夹", "成品图文件夹", "启用"])
         self._prepare_table(self.shop_table)
         layout.addWidget(self.shop_table)
         return page
@@ -291,10 +291,10 @@ class MainWindow(QMainWindow):
         page = self._page()
         layout = QVBoxLayout(page)
         layout.setSpacing(16)
-        layout.addWidget(self._page_title("Library", "Generated image records saved in the local CSV index."))
+        layout.addWidget(self._page_title("图片库", "这里显示保存在本地 CSV 索引中的图片生成记录。"))
 
         toolbar = QHBoxLayout()
-        refresh = QPushButton("Refresh")
+        refresh = QPushButton("刷新")
         refresh.clicked.connect(self._refresh_library)
         toolbar.addWidget(refresh)
         toolbar.addStretch()
@@ -302,7 +302,7 @@ class MainWindow(QMainWindow):
 
         self.library_table = QTableWidget(0, 8)
         self.library_table.setHorizontalHeaderLabels(
-            ["Code", "Shop", "Size", "DPI", "Pixels", "Original", "Output", "Created"]
+            ["编码", "店铺", "尺寸", "DPI", "像素", "原图", "成品图", "生成时间"]
         )
         self._prepare_table(self.library_table)
         layout.addWidget(self.library_table)
@@ -311,7 +311,7 @@ class MainWindow(QMainWindow):
     def _choose_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Choose image",
+            "选择图片",
             "",
             "Images (*.jpg *.jpeg *.png *.webp)",
         )
@@ -331,29 +331,29 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-        self.status_label.setText(f"Selected {self.selected_image.name}")
+        self.status_label.setText(f"已选择 {self.selected_image.name}")
 
     def _generate_code(self) -> None:
         shop = self._selected_shop()
         if shop is None:
-            self._warn("Add or select a shop before generating a code.")
+            self._warn("请先新增或选择一个店铺。")
             return
         try:
             existing = load_base_codes()
             sequence = next_sequence(existing, shop.prefix)
             self.generated_base_code = make_base_code(shop.prefix, sequence)
             self.base_code_input.setText(self.generated_base_code)
-            self.status_label.setText(f"Generated {self.generated_base_code}")
+            self.status_label.setText(f"已生成 {self.generated_base_code}")
         except ValueError as error:
             self._warn(str(error))
 
     def _generate_images(self) -> None:
         if self.selected_image is None:
-            self._warn("Choose an image first.")
+            self._warn("请先选择图片。")
             return
         shop = self._selected_shop()
         if shop is None:
-            self._warn("Add or select a shop first.")
+            self._warn("请先新增或选择一个店铺。")
             return
         base_code = self.base_code_input.text().strip().upper()
         if not base_code:
@@ -361,7 +361,7 @@ class MainWindow(QMainWindow):
             base_code = self.base_code_input.text().strip().upper()
         sizes = self._selected_sizes()
         if not sizes:
-            self._warn("Select at least one size.")
+            self._warn("请至少选择一个尺寸。")
             return
 
         try:
@@ -400,11 +400,11 @@ class MainWindow(QMainWindow):
                     )
                 )
                 created += 1
-            self.status_label.setText(f"Generated {created} image file(s).")
+            self.status_label.setText(f"已生成 {created} 个图片文件。")
             self._refresh_all()
-            self._info(f"Generated {created} image file(s).")
+            self._info(f"已生成 {created} 个图片文件。")
         except Exception as error:
-            self._warn(f"Failed to generate images: {error}")
+            self._warn(f"生成图片失败：{error}")
 
     def _save_shop(self) -> None:
         try:
@@ -414,12 +414,12 @@ class MainWindow(QMainWindow):
             return
         name = self.shop_name_input.text().strip()
         if not name:
-            self._warn("Shop name is required.")
+            self._warn("请填写店铺名称。")
             return
         original_folder = Path(self.original_folder_input.text().strip())
         output_folder = Path(self.output_folder_input.text().strip())
         if not str(original_folder) or not str(output_folder):
-            self._warn("Both folders are required.")
+            self._warn("请填写原图文件夹和成品图文件夹。")
             return
 
         shop = Shop(
@@ -437,7 +437,7 @@ class MainWindow(QMainWindow):
         self.shop_prefix_input.clear()
         self.original_folder_input.clear()
         self.output_folder_input.clear()
-        self.status_label.setText(f"Saved shop {shop.name}")
+        self.status_label.setText(f"已保存店铺：{shop.name}")
         self._refresh_all()
 
     def _selected_shop(self) -> Shop | None:
@@ -479,7 +479,7 @@ class MainWindow(QMainWindow):
                 shop.prefix,
                 str(shop.original_folder),
                 str(shop.output_folder),
-                "Yes" if shop.enabled else "No",
+                "是" if shop.enabled else "否",
             ]
             for column, value in enumerate(values):
                 self.shop_table.setItem(row, column, QTableWidgetItem(value))
@@ -510,14 +510,14 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        browse = QPushButton("Browse")
+        browse = QPushButton("浏览")
         browse.clicked.connect(lambda: self._browse_folder(line_edit))
         layout.addWidget(line_edit)
         layout.addWidget(browse)
         return container
 
     def _browse_folder(self, line_edit: QLineEdit) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Choose folder")
+        folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if folder:
             line_edit.setText(folder)
 
@@ -569,10 +569,10 @@ class MainWindow(QMainWindow):
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
     def _warn(self, text: str) -> None:
-        QMessageBox.warning(self, "Image Warehouse", text)
+        QMessageBox.warning(self, "图片仓库", text)
 
     def _info(self, text: str) -> None:
-        QMessageBox.information(self, "Image Warehouse", text)
+        QMessageBox.information(self, "图片仓库", text)
 
     def _apply_style(self) -> None:
         QApplication.instance().setStyleSheet(
@@ -691,4 +691,3 @@ class MainWindow(QMainWindow):
             }
             """
         )
-
