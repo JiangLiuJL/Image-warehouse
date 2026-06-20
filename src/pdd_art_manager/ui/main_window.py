@@ -380,9 +380,20 @@ class MainWindow(QMainWindow):
 
     def _paste_image_from_clipboard(self) -> None:
         clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        if mime_data.hasUrls():
+            for url in mime_data.urls():
+                if not url.isLocalFile():
+                    continue
+                path = Path(url.toLocalFile())
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
+                    self._set_selected_image(path)
+                    self.status_label.setText(f"已粘贴图片文件：{path.name}")
+                    return
+
         image = clipboard.image()
         if image.isNull():
-            self._warn("剪贴板里没有可用图片。请先复制图片，再点击预览框按 Ctrl+V。")
+            self._warn("剪贴板里没有可用图片。可以复制图片文件，或复制截图/网页图片后再粘贴。")
             return
         paste_dir = DATA_DIR / "clipboard_uploads"
         paste_dir.mkdir(parents=True, exist_ok=True)
