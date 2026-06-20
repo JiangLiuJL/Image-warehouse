@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sys
-from ctypes import windll
+from ctypes import c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
 from datetime import datetime
 from pathlib import Path
@@ -174,11 +174,26 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
         self.setMinimumSize(1040, 680)
+        self.setAcceptDrops(True)
         self._apply_style()
         self.setCentralWidget(self._build_shell())
         paste_shortcut = QShortcut(QKeySequence.StandardKey.Paste, self)
         paste_shortcut.activated.connect(self._paste_image_from_clipboard)
         self._refresh_all()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: ANN001
+        if self._image_path_from_drop(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: ANN001
+        path = self._image_path_from_drop(event.mimeData())
+        if path is None:
+            event.ignore()
+            return
+        self._set_dropped_image(path)
+        event.acceptProposedAction()
 
     def _build_shell(self) -> QWidget:
         root = QWidget()
@@ -435,6 +450,17 @@ class MainWindow(QMainWindow):
         self._set_selected_image(path)
         self.status_label.setText(f"已粘贴图片：{path.name}")
 
+    def _image_path_from_drop(self, mime_data) -> Path | None:  # noqa: ANN001
+        if not mime_data.hasUrls():
+            return None
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if self._is_supported_image_path(path):
+                return path
+        return None
+
     def _set_dropped_image(self, path: Path) -> None:
         self._set_selected_image(path)
         self.status_label.setText(f"已拖入图片：{path.name}")
@@ -460,7 +486,7 @@ class MainWindow(QMainWindow):
                 text = text[8:] if text.startswith("file:////") else text[7:]
                 text = text.replace("/", "\\")
             path = Path(text)
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
+            if self._is_supported_image_path(path):
                 return path
         return None
 
@@ -471,6 +497,7 @@ class MainWindow(QMainWindow):
         cf_hdrop = 15
         user32 = windll.user32
         shell32 = windll.shell32
+        user32.GetClipboardData.restype = c_void_p
 
         if not user32.IsClipboardFormatAvailable(cf_hdrop):
             return None
@@ -482,14 +509,17 @@ class MainWindow(QMainWindow):
                 return None
             file_count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
             for index in range(file_count):
-                buffer = "\0" * MAX_PATH
+                buffer = create_unicode_buffer(MAX_PATH)
                 shell32.DragQueryFileW(handle, index, buffer, MAX_PATH)
-                path = Path(buffer.rstrip("\0"))
-                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists():
+                path = Path(buffer.value)
+                if self._is_supported_image_path(path):
                     return path
         finally:
             user32.CloseClipboard()
         return None
+
+    def _is_supported_image_path(self, path: Path) -> bool:
+        return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists()
 
     def _set_selected_image(self, path: Path) -> None:
         self.selected_image = path
