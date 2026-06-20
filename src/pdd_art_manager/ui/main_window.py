@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import sys
 import os
-from ctypes import c_int, c_void_p, create_unicode_buffer, windll
+from ctypes import c_uint, c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
 from datetime import datetime
 from pathlib import Path
@@ -530,13 +530,14 @@ class MainWindow(QMainWindow):
         cf_hdrop = 15
         user32 = windll.user32
         shell32 = windll.shell32
-        user32.IsClipboardFormatAvailable.argtypes = [c_int]
-        user32.IsClipboardFormatAvailable.restype = c_int
+        user32.IsClipboardFormatAvailable.argtypes = [c_uint]
+        user32.IsClipboardFormatAvailable.restype = c_uint
         user32.OpenClipboard.argtypes = [c_void_p]
-        user32.OpenClipboard.restype = c_int
+        user32.OpenClipboard.restype = c_uint
         user32.GetClipboardData.restype = c_void_p
-        user32.CloseClipboard.restype = c_int
-        shell32.DragQueryFileW.restype = int
+        user32.CloseClipboard.restype = c_uint
+        shell32.DragQueryFileW.argtypes = [c_void_p, c_uint, c_void_p, c_uint]
+        shell32.DragQueryFileW.restype = c_uint
 
         if not user32.IsClipboardFormatAvailable(cf_hdrop):
             return []
@@ -546,12 +547,13 @@ class MainWindow(QMainWindow):
             handle = user32.GetClipboardData(cf_hdrop)
             if not handle:
                 return []
+            hdrop = c_void_p(handle)
             paths: list[Path] = []
-            file_count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
+            file_count = shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
             for index in range(file_count):
-                length = shell32.DragQueryFileW(handle, index, None, 0)
+                length = shell32.DragQueryFileW(hdrop, index, None, 0)
                 buffer = create_unicode_buffer(max(length + 1, MAX_PATH))
-                shell32.DragQueryFileW(handle, index, buffer, len(buffer))
+                shell32.DragQueryFileW(hdrop, index, buffer, len(buffer))
                 paths.append(Path(buffer.value))
             return paths
         finally:
