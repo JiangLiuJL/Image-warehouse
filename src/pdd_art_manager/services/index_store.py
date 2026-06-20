@@ -46,3 +46,9 @@ def load_base_codes(path: Path = IMAGE_INDEX_FILE) -> set[str]:
         reader = csv.DictReader(file)
         return {row["base_code"] for row in reader if row.get("base_code")}
 
+
+def load_index_rows(path: Path = IMAGE_INDEX_FILE) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", newline="", encoding="utf-8-sig") as file:
+        return list(csv.DictReader(file))
