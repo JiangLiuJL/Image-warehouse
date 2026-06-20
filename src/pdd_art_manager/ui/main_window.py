@@ -384,9 +384,9 @@ class MainWindow(QMainWindow):
         size_scroll.setWidgetResizable(True)
         size_scroll.setFrameShape(QFrame.Shape.NoFrame)
         size_scroll.setMinimumHeight(190)
-        size_scroll.setMaximumHeight(250)
+        size_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         size_scroll.setWidget(self.size_list)
-        form_layout.addWidget(size_scroll)
+        form_layout.addWidget(size_scroll, 1)
         for width, height in DEFAULT_SIZES:
             self._add_size_row(width, height, 150)
 
@@ -395,7 +395,6 @@ class MainWindow(QMainWindow):
         self.generate_button.setMinimumHeight(44)
         self.generate_button.clicked.connect(self._generate_images)
         form_layout.addWidget(self.generate_button)
-        form_layout.addStretch()
 
         body.addWidget(left, 3)
         body.addWidget(right, 2)
