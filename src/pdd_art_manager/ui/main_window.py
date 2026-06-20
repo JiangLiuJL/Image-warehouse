@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImageReader, QKeySequence, QPixmap
+from PySide6.QtGui import QImageReader, QIntValidator, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -90,6 +91,46 @@ class PasteImagePreview(QLabel):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
+
+
+class SizeNumberInput(QWidget):
+    def __init__(self, value: int, minimum: int, maximum: int) -> None:
+        super().__init__()
+        self.minimum = minimum
+        self.maximum = maximum
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+
+        self.input = QLineEdit(str(value))
+        self.input.setObjectName("SizeNumberInput")
+        self.input.setValidator(QIntValidator(minimum, maximum, self))
+        self.input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.input.setFixedWidth(48)
+
+        minus_button = QToolButton()
+        minus_button.setObjectName("SizeStepButton")
+        minus_button.setText("-")
+        minus_button.clicked.connect(lambda: self.step_by(-1))
+
+        plus_button = QToolButton()
+        plus_button.setObjectName("SizeStepButton")
+        plus_button.setText("+")
+        plus_button.clicked.connect(lambda: self.step_by(1))
+
+        layout.addWidget(self.input)
+        layout.addWidget(minus_button)
+        layout.addWidget(plus_button)
+
+    def value(self) -> int:
+        text = self.input.text().strip()
+        if not text:
+            return self.minimum
+        return max(self.minimum, min(self.maximum, int(text)))
+
+    def step_by(self, amount: int) -> None:
+        self.input.setText(str(max(self.minimum, min(self.maximum, self.value() + amount))))
 
 
 class MainWindow(QMainWindow):
@@ -241,7 +282,7 @@ class MainWindow(QMainWindow):
         size_header.addWidget(add_size_button)
         form_layout.addLayout(size_header)
 
-        self.size_rows: list[tuple[QFrame, QSpinBox, QSpinBox, QSpinBox]] = []
+        self.size_rows: list[tuple[QFrame, SizeNumberInput, SizeNumberInput, SizeNumberInput]] = []
         self.size_list = QWidget()
         self.size_list.setObjectName("SizeList")
         self.size_list_layout = QVBoxLayout(self.size_list)
@@ -496,9 +537,9 @@ class MainWindow(QMainWindow):
         row_layout.setContentsMargins(10, 8, 10, 8)
         row_layout.setSpacing(8)
 
-        width_spin = self._size_spin(width, 1, 300)
-        height_spin = self._size_spin(height, 1, 300)
-        dpi_spin = self._size_spin(dpi, 72, 600)
+        width_spin = self._size_input(width, 1, 300)
+        height_spin = self._size_input(height, 1, 300)
+        dpi_spin = self._size_input(dpi, 72, 600)
 
         row_layout.addWidget(QLabel("宽"))
         row_layout.addWidget(width_spin)
@@ -529,13 +570,8 @@ class MainWindow(QMainWindow):
                 frame.deleteLater()
                 return
 
-    def _size_spin(self, value: int, minimum: int, maximum: int) -> QSpinBox:
-        spin = QSpinBox()
-        spin.setRange(minimum, maximum)
-        spin.setValue(value)
-        spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        spin.setFixedWidth(72)
-        return spin
+    def _size_input(self, value: int, minimum: int, maximum: int) -> SizeNumberInput:
+        return SizeNumberInput(value, minimum, maximum)
 
     def _refresh_all(self) -> None:
         self.shops = load_shops()
@@ -774,6 +810,17 @@ class MainWindow(QMainWindow):
             }
             #DeleteButton:hover {
                 background: #fdecea;
+            }
+            #SizeNumberInput {
+                padding: 7px 6px;
+            }
+            #SizeStepButton {
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 32px;
+                max-height: 32px;
+                padding: 0;
+                font-weight: 700;
             }
             QLineEdit, QComboBox, QSpinBox {
                 background: #ffffff;
