@@ -475,7 +475,8 @@ class MainWindow(QMainWindow):
         if path is None:
             path = self._image_path_from_clipboard_mime(mime_data)
         if path is not None:
-            self._set_selected_image(path)
+            cached_path = self._cache_clipboard_file(path)
+            self._set_selected_image(cached_path)
             self.status_label.setText(f"已粘贴图片文件：{path.name}")
             return
 
@@ -591,7 +592,8 @@ class MainWindow(QMainWindow):
         if image_path is None:
             image_path = self._image_path_from_clipboard_mime(QApplication.clipboard().mimeData())
         if image_path is not None:
-            self._set_selected_image(image_path)
+            cached_path = self._cache_clipboard_file(image_path)
+            self._set_selected_image(cached_path)
             self._info(f"诊断已保存，并已导入图片：\n{image_path}")
             return
         self._info(f"诊断已保存到：\n{path}")
@@ -632,6 +634,13 @@ class MainWindow(QMainWindow):
 
     def _is_supported_image_path(self, path: Path) -> bool:
         return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists()
+
+    def _cache_clipboard_file(self, path: Path) -> Path:
+        paste_dir = DATA_DIR / "clipboard_uploads"
+        paste_dir.mkdir(parents=True, exist_ok=True)
+        cached_path = paste_dir / f"粘贴文件_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix.lower()}"
+        shutil.copy2(path, cached_path)
+        return cached_path
 
     def _set_selected_image(self, path: Path) -> None:
         self.selected_image = path
