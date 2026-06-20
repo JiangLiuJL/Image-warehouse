@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import shutil
 import sys
-from ctypes import c_void_p, create_unicode_buffer, windll
+from ctypes import c_int, c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QImageReader, QIntValidator, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -179,7 +179,22 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._build_shell())
         paste_shortcut = QShortcut(QKeySequence.StandardKey.Paste, self)
         paste_shortcut.activated.connect(self._paste_image_from_clipboard)
+        QApplication.instance().installEventFilter(self)
         self._refresh_all()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: ANN001, N802
+        if event.type() == QEvent.Type.DragEnter:
+            path = self._image_path_from_drop(event.mimeData())
+            if path is not None:
+                event.acceptProposedAction()
+                return True
+        if event.type() == QEvent.Type.Drop:
+            path = self._image_path_from_drop(event.mimeData())
+            if path is not None:
+                self._set_dropped_image(path)
+                event.acceptProposedAction()
+                return True
+        return super().eventFilter(watched, event)
 
     def dragEnterEvent(self, event) -> None:  # noqa: ANN001
         if self._image_path_from_drop(event.mimeData()) is not None:
@@ -296,9 +311,14 @@ class MainWindow(QMainWindow):
         self.preview_label.paste_requested.connect(self._paste_image_from_clipboard)
         self.preview_label.image_dropped.connect(self._set_dropped_image)
         left_layout.addWidget(self.preview_label)
+        upload_actions = QHBoxLayout()
         choose = QPushButton("选择图片")
         choose.clicked.connect(self._choose_image)
-        left_layout.addWidget(choose)
+        paste_button = QPushButton("粘贴图片")
+        paste_button.clicked.connect(self._paste_image_from_clipboard)
+        upload_actions.addWidget(choose)
+        upload_actions.addWidget(paste_button)
+        left_layout.addLayout(upload_actions)
 
         right = self._panel()
         form_layout = QVBoxLayout(right)
@@ -497,7 +517,13 @@ class MainWindow(QMainWindow):
         cf_hdrop = 15
         user32 = windll.user32
         shell32 = windll.shell32
+        user32.IsClipboardFormatAvailable.argtypes = [c_int]
+        user32.IsClipboardFormatAvailable.restype = c_int
+        user32.OpenClipboard.argtypes = [c_void_p]
+        user32.OpenClipboard.restype = c_int
         user32.GetClipboardData.restype = c_void_p
+        user32.CloseClipboard.restype = c_int
+        shell32.DragQueryFileW.restype = int
 
         if not user32.IsClipboardFormatAvailable(cf_hdrop):
             return None
@@ -509,8 +535,9 @@ class MainWindow(QMainWindow):
                 return None
             file_count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0)
             for index in range(file_count):
-                buffer = create_unicode_buffer(MAX_PATH)
-                shell32.DragQueryFileW(handle, index, buffer, MAX_PATH)
+                length = shell32.DragQueryFileW(handle, index, None, 0)
+                buffer = create_unicode_buffer(max(length + 1, MAX_PATH))
+                shell32.DragQueryFileW(handle, index, buffer, len(buffer))
                 path = Path(buffer.value)
                 if self._is_supported_image_path(path):
                     return path
