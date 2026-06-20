@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QImageReader, QIntValidator, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QImage, QIntValidator, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -48,6 +48,7 @@ from pdd_art_manager.services.code_generator import (
 from pdd_art_manager.services.image_processor import generate_sized_image, read_image_info
 from pdd_art_manager.services.index_store import append_index_row, load_base_codes, load_index_rows
 from pdd_art_manager.services.shop_store import load_shops, save_shops
+from PIL import Image, ImageOps
 
 
 DEFAULT_SIZES = [(20, 30), (30, 40), (40, 60)]
@@ -627,16 +628,24 @@ class MainWindow(QMainWindow):
             f"{info.width_px} x {info.height_px} px | DPI：{dpi_text} | {info.file_format}"
         )
 
-        reader = QImageReader(str(path))
-        reader.setAutoTransform(True)
-        image = reader.read()
-        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap(str(path))
+        pixmap = self._load_preview_pixmap(path)
         if pixmap.isNull():
             self.preview_label.clear_preview("图片预览失败，但文件已选择。")
         else:
             self.preview_label.set_preview_pixmap(pixmap)
         self.preview_label.setFocus()
         self.status_label.setText(f"已选择图片：{path.name}")
+
+    def _load_preview_pixmap(self, path: Path) -> QPixmap:
+        try:
+            with Image.open(path) as image:
+                image = ImageOps.exif_transpose(image).convert("RGBA")
+                width, height = image.size
+                data = image.tobytes("raw", "RGBA")
+                qimage = QImage(data, width, height, width * 4, QImage.Format.Format_RGBA8888)
+                return QPixmap.fromImage(qimage.copy())
+        except Exception:
+            return QPixmap()
 
     def _generate_code(self) -> None:
         shop = self._selected_shop()
