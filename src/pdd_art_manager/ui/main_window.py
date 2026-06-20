@@ -378,6 +378,7 @@ class MainWindow(QMainWindow):
         self.size_list_layout = QVBoxLayout(self.size_list)
         self.size_list_layout.setContentsMargins(0, 0, 0, 0)
         self.size_list_layout.setSpacing(8)
+        self.size_list_layout.addStretch()
 
         size_scroll = QScrollArea()
         size_scroll.setObjectName("SizeScroll")
@@ -821,6 +822,7 @@ class MainWindow(QMainWindow):
     def _add_size_row(self, width: int, height: int, dpi: int) -> None:
         row_frame = QFrame()
         row_frame.setObjectName("SizeRow")
+        row_frame.setFixedHeight(58)
         row_layout = QHBoxLayout(row_frame)
         row_layout.setContentsMargins(10, 8, 10, 8)
         row_layout.setSpacing(8)
@@ -848,7 +850,7 @@ class MainWindow(QMainWindow):
         row_layout.addWidget(delete_button)
 
         self.size_rows.append((row_frame, width_spin, height_spin, dpi_spin))
-        self.size_list_layout.addWidget(row_frame)
+        self.size_list_layout.insertWidget(max(0, self.size_list_layout.count() - 1), row_frame)
 
     def _delete_size_row(self, row_frame: QFrame) -> None:
         for index, (frame, _width, _height, _dpi) in enumerate(self.size_rows):
