@@ -4,12 +4,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QImageReader, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -27,7 +26,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -40,20 +39,57 @@ from pdd_art_manager.services.code_generator import (
     next_sequence,
     normalize_shop_prefix,
 )
-from pdd_art_manager.services.image_processor import (
-    generate_sized_image,
-    read_image_info,
-    target_pixels,
-)
-from pdd_art_manager.services.index_store import (
-    append_index_row,
-    load_base_codes,
-    load_index_rows,
-)
+from pdd_art_manager.services.image_processor import generate_sized_image, read_image_info
+from pdd_art_manager.services.index_store import append_index_row, load_base_codes, load_index_rows
 from pdd_art_manager.services.shop_store import load_shops, save_shops
 
 
 DEFAULT_SIZES = [(20, 30), (30, 40), (40, 60)]
+
+
+class PasteImagePreview(QLabel):
+    paste_requested = Signal()
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self._pixmap: QPixmap | None = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setWordWrap(True)
+
+    def set_preview_pixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
+        self._render_pixmap()
+
+    def clear_preview(self, text: str) -> None:
+        self._pixmap = None
+        self.clear()
+        self.setText(text)
+
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        self.setFocus()
+        super().mousePressEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        self._render_pixmap()
+
+    def _render_pixmap(self) -> None:
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        self.setPixmap(
+            self._pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
 
 class MainWindow(QMainWindow):
@@ -90,12 +126,7 @@ class MainWindow(QMainWindow):
         caption.setObjectName("Caption")
 
         self.nav_buttons: list[QPushButton] = []
-        nav_items = [
-            ("总览", 0),
-            ("上传图片", 1),
-            ("店铺管理", 2),
-            ("图片库", 3),
-        ]
+        nav_items = [("总览", 0), ("上传图片", 1), ("店铺管理", 2), ("图片库", 3)]
         side_layout.addWidget(brand)
         side_layout.addWidget(caption)
         side_layout.addSpacing(18)
@@ -128,7 +159,6 @@ class MainWindow(QMainWindow):
         page = self._page()
         layout = QVBoxLayout(page)
         layout.setSpacing(18)
-
         layout.addWidget(self._page_title("总览", "管理店铺文件夹、图片编码和打印尺寸。"))
 
         metrics = QGridLayout()
@@ -171,11 +201,11 @@ class MainWindow(QMainWindow):
         left = self._panel()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(self._section_title("原图"))
-        self.preview_label = QLabel("未选择图片")
+        self.preview_label = PasteImagePreview("未选择图片\n\n点击这里后按 Ctrl+V 可粘贴图片")
         self.preview_label.setObjectName("Preview")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(360, 430)
         self.preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.preview_label.paste_requested.connect(self._paste_image_from_clipboard)
         left_layout.addWidget(self.preview_label)
         choose = QPushButton("选择图片")
         choose.clicked.connect(self._choose_image)
@@ -203,39 +233,22 @@ class MainWindow(QMainWindow):
         form.addRow("图片信息", self.image_info_label)
         form_layout.addLayout(form)
 
-        form_layout.addWidget(self._section_title("尺寸"))
-        self.size_checks: list[tuple[QCheckBox, int, int]] = []
-        size_grid = QGridLayout()
-        for index, (width, height) in enumerate(DEFAULT_SIZES):
-            checkbox = QCheckBox(f"{width} x {height} 厘米")
-            checkbox.setChecked(index == 0)
-            self.size_checks.append((checkbox, width, height))
-            size_grid.addWidget(checkbox, index // 2, index % 2)
-        form_layout.addLayout(size_grid)
+        size_header = QHBoxLayout()
+        size_header.addWidget(self._section_title("尺寸"))
+        size_header.addStretch()
+        add_size_button = QPushButton("添加尺寸")
+        add_size_button.clicked.connect(lambda: self._add_size_row(20, 30, 150))
+        size_header.addWidget(add_size_button)
+        form_layout.addLayout(size_header)
 
-        custom_row = QHBoxLayout()
-        self.custom_size_check = QCheckBox("自定义")
-        self.custom_width = QSpinBox()
-        self.custom_width.setRange(1, 300)
-        self.custom_width.setValue(50)
-        self.custom_height = QSpinBox()
-        self.custom_height.setRange(1, 300)
-        self.custom_height.setValue(70)
-        custom_row.addWidget(self.custom_size_check)
-        custom_row.addWidget(QLabel("宽"))
-        custom_row.addWidget(self.custom_width)
-        custom_row.addWidget(QLabel("高"))
-        custom_row.addWidget(self.custom_height)
-        form_layout.addLayout(custom_row)
-
-        dpi_row = QHBoxLayout()
-        self.dpi_spin = QSpinBox()
-        self.dpi_spin.setRange(72, 600)
-        self.dpi_spin.setValue(150)
-        dpi_row.addWidget(QLabel("DPI"))
-        dpi_row.addWidget(self.dpi_spin)
-        dpi_row.addStretch()
-        form_layout.addLayout(dpi_row)
+        self.size_table = QTableWidget(0, 4)
+        self.size_table.setHorizontalHeaderLabels(["宽(cm)", "高(cm)", "DPI", "操作"])
+        self.size_table.verticalHeader().setVisible(False)
+        self.size_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.size_table.setMinimumHeight(188)
+        form_layout.addWidget(self.size_table)
+        for width, height in DEFAULT_SIZES:
+            self._add_size_row(width, height, 150)
 
         self.generate_button = QPushButton("生成所选尺寸")
         self.generate_button.setObjectName("PrimaryButton")
@@ -265,14 +278,11 @@ class MainWindow(QMainWindow):
         self.original_folder_input = QLineEdit()
         self.output_folder_input = QLineEdit()
 
-        original_row = self._path_row(self.original_folder_input)
-        output_row = self._path_row(self.output_folder_input)
-
         form.addRow("店铺名称", self.shop_name_input)
         form.addRow("店铺简称", self.shop_short_input)
         form.addRow("店铺前缀", self.shop_prefix_input)
-        form.addRow("原图文件夹", original_row)
-        form.addRow("成品图文件夹", output_row)
+        form.addRow("原图文件夹", self._path_row(self.original_folder_input))
+        form.addRow("成品图文件夹", self._path_row(self.output_folder_input))
         panel_layout.addLayout(form)
 
         save_button = QPushButton("保存店铺")
@@ -313,25 +323,44 @@ class MainWindow(QMainWindow):
             self,
             "选择图片",
             "",
-            "Images (*.jpg *.jpeg *.png *.webp)",
+            "图片文件 (*.jpg *.jpeg *.png *.webp)",
         )
-        if not path:
+        if path:
+            self._set_selected_image(Path(path))
+
+    def _paste_image_from_clipboard(self) -> None:
+        clipboard = QApplication.clipboard()
+        image = clipboard.image()
+        if image.isNull():
+            self._warn("剪贴板里没有可用图片。请先复制图片，再点击预览框按 Ctrl+V。")
             return
-        self.selected_image = Path(path)
-        info = read_image_info(self.selected_image)
-        dpi_text = f"{info.dpi_x:g} x {info.dpi_y:g}" if info.dpi_x and info.dpi_y else "not set"
+        paste_dir = DATA_DIR / "clipboard_uploads"
+        paste_dir.mkdir(parents=True, exist_ok=True)
+        path = paste_dir / f"粘贴图片_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        if not image.save(str(path), "PNG"):
+            self._warn("保存粘贴图片失败。")
+            return
+        self._set_selected_image(path)
+        self.status_label.setText(f"已粘贴图片：{path.name}")
+
+    def _set_selected_image(self, path: Path) -> None:
+        self.selected_image = path
+        info = read_image_info(path)
+        dpi_text = f"{info.dpi_x:g} x {info.dpi_y:g}" if info.dpi_x and info.dpi_y else "未设置"
         self.image_info_label.setText(
-            f"{info.width_px} x {info.height_px} px | DPI: {dpi_text} | {info.file_format}"
+            f"{info.width_px} x {info.height_px} px | DPI：{dpi_text} | {info.file_format}"
         )
-        pixmap = QPixmap(path)
-        self.preview_label.setPixmap(
-            pixmap.scaled(
-                self.preview_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-        self.status_label.setText(f"已选择 {self.selected_image.name}")
+
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap(str(path))
+        if pixmap.isNull():
+            self.preview_label.clear_preview("图片预览失败，但文件已选择。")
+        else:
+            self.preview_label.set_preview_pixmap(pixmap)
+        self.preview_label.setFocus()
+        self.status_label.setText(f"已选择图片：{path.name}")
 
     def _generate_code(self) -> None:
         shop = self._selected_shop()
@@ -339,11 +368,10 @@ class MainWindow(QMainWindow):
             self._warn("请先新增或选择一个店铺。")
             return
         try:
-            existing = load_base_codes()
-            sequence = next_sequence(existing, shop.prefix)
+            sequence = next_sequence(load_base_codes(), shop.prefix)
             self.generated_base_code = make_base_code(shop.prefix, sequence)
             self.base_code_input.setText(self.generated_base_code)
-            self.status_label.setText(f"已生成 {self.generated_base_code}")
+            self.status_label.setText(f"已生成编码：{self.generated_base_code}")
         except ValueError as error:
             self._warn(str(error))
 
@@ -447,15 +475,39 @@ class MainWindow(QMainWindow):
         return self.shops[index]
 
     def _selected_sizes(self) -> list[SizeSpec]:
-        dpi = self.dpi_spin.value()
-        sizes = [
-            SizeSpec(width, height, dpi)
-            for checkbox, width, height in self.size_checks
-            if checkbox.isChecked()
-        ]
-        if self.custom_size_check.isChecked():
-            sizes.append(SizeSpec(self.custom_width.value(), self.custom_height.value(), dpi))
+        sizes: list[SizeSpec] = []
+        for row in range(self.size_table.rowCount()):
+            width_spin = self.size_table.cellWidget(row, 0)
+            height_spin = self.size_table.cellWidget(row, 1)
+            dpi_spin = self.size_table.cellWidget(row, 2)
+            if isinstance(width_spin, QSpinBox) and isinstance(height_spin, QSpinBox) and isinstance(dpi_spin, QSpinBox):
+                sizes.append(SizeSpec(width_spin.value(), height_spin.value(), dpi_spin.value()))
         return sizes
+
+    def _add_size_row(self, width: int, height: int, dpi: int) -> None:
+        row = self.size_table.rowCount()
+        self.size_table.insertRow(row)
+        self.size_table.setCellWidget(row, 0, self._size_spin(width, 1, 300))
+        self.size_table.setCellWidget(row, 1, self._size_spin(height, 1, 300))
+        self.size_table.setCellWidget(row, 2, self._size_spin(dpi, 72, 600))
+
+        delete_button = QToolButton()
+        delete_button.setText("删除")
+        delete_button.clicked.connect(lambda checked=False, button=delete_button: self._delete_size_row(button))
+        self.size_table.setCellWidget(row, 3, delete_button)
+
+    def _delete_size_row(self, button: QToolButton) -> None:
+        for row in range(self.size_table.rowCount()):
+            if self.size_table.cellWidget(row, 3) is button:
+                self.size_table.removeRow(row)
+                return
+
+    def _size_spin(self, value: int, minimum: int, maximum: int) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setValue(value)
+        spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return spin
 
     def _refresh_all(self) -> None:
         self.shops = load_shops()
@@ -651,6 +703,10 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 background: #fbfcfa;
                 color: #7b8580;
+                padding: 18px;
+            }
+            #Preview:focus {
+                border: 2px solid #2f6f5f;
             }
             QPushButton {
                 background: #ffffff;
@@ -670,7 +726,7 @@ class MainWindow(QMainWindow):
             #PrimaryButton:hover {
                 background: #285f52;
             }
-            QLineEdit, QComboBox, QSpinBox, QTextEdit {
+            QLineEdit, QComboBox, QSpinBox {
                 background: #ffffff;
                 border: 1px solid #cbd6d1;
                 border-radius: 6px;
