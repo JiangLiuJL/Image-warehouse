@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QIntValidator, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -71,7 +71,6 @@ class PasteImagePreview(QLabel):
         self._pixmap = pixmap
         self.clear()
         self.setText("")
-        self._render_pixmap()
         self.update()
 
     def clear_preview(self, text: str) -> None:
@@ -91,7 +90,7 @@ class PasteImagePreview(QLabel):
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
-        self._render_pixmap()
+        self.update()
 
     def dragEnterEvent(self, event) -> None:  # noqa: ANN001
         if self._image_path_from_drop(event.mimeData()) is not None:
@@ -107,17 +106,26 @@ class PasteImagePreview(QLabel):
         self.image_dropped.emit(path)
         event.acceptProposedAction()
 
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        if self._pixmap is None or self._pixmap.isNull():
+            super().paintEvent(event)
+            return
+        super().paintEvent(event)
+        self._render_pixmap()
+
     def _render_pixmap(self) -> None:
         if self._pixmap is None or self._pixmap.isNull():
             return
-        self.clear()
-        self.setPixmap(
-            self._pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        painter = QPainter(self)
+        scaled = self._pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
 
     def _image_path_from_drop(self, mime_data) -> Path | None:  # noqa: ANN001
         if not mime_data.hasUrls():
@@ -639,7 +647,7 @@ class MainWindow(QMainWindow):
         else:
             self.preview_label.set_preview_pixmap(pixmap)
         self.preview_label.setFocus()
-        self.status_label.setText(f"已选择图片：{path.name}")
+        self.status_label.setText(f"已选择图片：{path.name}，预览尺寸：{pixmap.width()} x {pixmap.height()}")
 
     def _load_preview_pixmap(self, path: Path) -> tuple[QPixmap, str]:
         try:
