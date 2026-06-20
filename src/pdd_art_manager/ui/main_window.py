@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import os
 from ctypes import c_int, c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
 from datetime import datetime
@@ -316,11 +317,14 @@ class MainWindow(QMainWindow):
         choose.clicked.connect(self._choose_image)
         paste_button = QPushButton("粘贴图片")
         paste_button.clicked.connect(self._paste_image_from_clipboard)
-        diagnose_button = QPushButton("诊断粘贴")
-        diagnose_button.clicked.connect(self._show_clipboard_diagnostics)
+        self.diagnose_button = QPushButton("诊断粘贴")
+        self.diagnose_button.clicked.connect(self._show_clipboard_diagnostics)
+        open_diag_button = QPushButton("打开诊断")
+        open_diag_button.clicked.connect(self._open_diagnostics_folder)
         upload_actions.addWidget(choose)
         upload_actions.addWidget(paste_button)
-        upload_actions.addWidget(diagnose_button)
+        upload_actions.addWidget(self.diagnose_button)
+        upload_actions.addWidget(open_diag_button)
         left_layout.addLayout(upload_actions)
 
         right = self._panel()
@@ -554,6 +558,22 @@ class MainWindow(QMainWindow):
             user32.CloseClipboard()
 
     def _show_clipboard_diagnostics(self) -> None:
+        try:
+            report = self._build_clipboard_diagnostics_report()
+        except Exception as error:
+            report = f"剪贴板诊断失败：{error!r}"
+
+        path = DATA_DIR / "clipboard_diagnostics.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report, encoding="utf-8")
+        self.status_label.setText(f"诊断已保存：{path}")
+        self._info(f"诊断已保存到：\n{path}")
+
+    def _open_diagnostics_folder(self) -> None:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        os.startfile(DATA_DIR)
+
+    def _build_clipboard_diagnostics_report(self) -> str:
         clipboard = QApplication.clipboard()
         mime_data = clipboard.mimeData()
         lines = ["剪贴板诊断：", ""]
@@ -581,7 +601,7 @@ class MainWindow(QMainWindow):
         for path in win_paths:
             lines.append(f"  {path} | exists={path.exists()} | supported={self._is_supported_image_path(path)}")
 
-        QMessageBox.information(self, "剪贴板诊断", "\n".join(lines))
+        return "\n".join(lines)
 
     def _is_supported_image_path(self, path: Path) -> bool:
         return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists()
