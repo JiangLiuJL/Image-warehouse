@@ -50,6 +50,7 @@ from pdd_art_manager.services.code_generator import (
 )
 from pdd_art_manager.services.image_processor import generate_sized_image, read_image_info
 from pdd_art_manager.services.index_store import (
+    delete_index_rows,
     append_index_row,
     load_base_codes,
     load_index_rows,
@@ -67,7 +68,7 @@ from pdd_art_manager.services.shop_store import load_shops, save_shops
 from PIL import Image, ImageOps
 
 
-DEFAULT_SIZES = [(20, 30), (30, 40), (40, 60)]
+DEFAULT_SIZES = [(20, 30), (30, 45), (40, 60)]
 
 
 class PasteImagePreview(QLabel):
@@ -521,6 +522,9 @@ class MainWindow(QMainWindow):
         search = QPushButton("搜索")
         search.clicked.connect(self._refresh_library)
         toolbar.addWidget(search)
+        delete_record = QPushButton("删除所选")
+        delete_record.clicked.connect(self._delete_selected_library_rows)
+        toolbar.addWidget(delete_record)
         clear_filters = QPushButton("清空筛选")
         clear_filters.clicked.connect(self._clear_library_filters)
         toolbar.addWidget(clear_filters)
@@ -557,6 +561,7 @@ class MainWindow(QMainWindow):
             ["缩略图", "编码", "店铺", "尺寸", "DPI", "像素", "原图", "成品图", "生成时间"]
         )
         self._prepare_table(self.library_table)
+        self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.library_table.setSortingEnabled(True)
         self.library_table.verticalHeader().setDefaultSectionSize(58)
         content_layout.addWidget(self.library_table)
@@ -588,9 +593,17 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
         layout.addWidget(self._page_title("打印文件", "导入订单文件后，按尺寸和数量自动整理打印图片。"))
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
         panel = self._panel()
         panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(14, 14, 14, 14)
+        panel_layout.setSpacing(12)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setVerticalSpacing(8)
 
         self.print_order_file_input = QLineEdit()
         self.print_output_folder_name_input = QLineEdit()
@@ -604,6 +617,17 @@ class MainWindow(QMainWindow):
         self.print_order_counts: dict[str, int] = {}
         self.print_remark_ignored_codes: list[tuple[str, int]] = []
         self.print_missing_rows: list[dict[str, object]] = []
+
+        for widget in (
+            self.print_order_file_input,
+            self.print_output_folder_name_input,
+            self.print_output_root_input,
+            self.print_quantity_column_combo,
+            self.print_code_column_combo,
+            self.print_remark_column_1_combo,
+            self.print_remark_column_2_combo,
+        ):
+            widget.setMinimumHeight(34)
 
         form.addRow("订单文件", self._file_row(self.print_order_file_input, "订单文件 (*.xlsx *.csv);;所有文件 (*.*)"))
         form.addRow("打印文件夹名称", self.print_output_folder_name_input)
@@ -619,7 +643,8 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(preview_title)
 
         self.print_preview_table = QTableWidget(0, 0)
-        self.print_preview_table.setMinimumHeight(180)
+        self.print_preview_table.setMinimumHeight(220)
+        self.print_preview_table.setMaximumHeight(280)
         self._prepare_table(self.print_preview_table)
         panel_layout.addWidget(self.print_preview_table)
 
@@ -634,6 +659,8 @@ class MainWindow(QMainWindow):
 
         self.print_summary_label = QLabel("生成结果会显示在这里。")
         self.print_summary_label.setWordWrap(True)
+        self.print_summary_label.setMinimumHeight(84)
+        self.print_summary_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         panel_layout.addWidget(self.print_summary_label)
 
         action_row = QHBoxLayout()
@@ -653,8 +680,9 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
         panel_layout.addLayout(action_row)
 
-        layout.addWidget(panel)
-        layout.addStretch()
+        panel_layout.addStretch()
+        scroll.setWidget(panel)
+        layout.addWidget(scroll)
         self.latest_print_output: Path | None = None
         return page
 
@@ -965,9 +993,10 @@ class MainWindow(QMainWindow):
             shop.original_folder.mkdir(parents=True, exist_ok=True)
             shop.output_folder.mkdir(parents=True, exist_ok=True)
 
-            original_copy = shop.original_folder / self.selected_image.name
-            if self.selected_image.resolve() != original_copy.resolve():
-                shutil.copy2(self.selected_image, original_copy)
+            original_copy = shop.original_folder / f"{self.selected_image.stem}.jpg"
+            with Image.open(self.selected_image) as original_image:
+                converted_original = ImageOps.exif_transpose(original_image).convert("RGB")
+                converted_original.save(original_copy, format="JPEG", quality=95)
 
             created = 0
             for size in sizes:
@@ -986,7 +1015,7 @@ class MainWindow(QMainWindow):
                         shop_prefix=shop.prefix,
                         base_code=base_code,
                         full_code=full_code,
-                        original_name=self.selected_image.name,
+                        original_name=original_copy.name,
                         original_path=original_copy,
                         output_path=output_path,
                         width_cm=size.width_cm,
@@ -1188,6 +1217,47 @@ class MainWindow(QMainWindow):
         for filter_box in self.library_filters.values():
             filter_box.clear()
         self._refresh_library()
+
+    def _delete_selected_library_rows(self) -> None:
+        selected_rows = sorted({index.row() for index in self.library_table.selectionModel().selectedRows()})
+        if not selected_rows:
+            self._warn("请先在图片库中选择要删除的记录。")
+            return
+
+        selected_codes = {
+            self.library_table.item(row, 1).text().strip().upper()
+            for row in selected_rows
+            if self.library_table.item(row, 1)
+        }
+        if not selected_codes:
+            self._warn("没有读取到可删除的图片编码。")
+            return
+
+        choice = QMessageBox.question(
+            self,
+            "图片仓库",
+            "是否同时删除对应的成品图文件？\n\n选择“是”会删除记录和成品图文件。\n选择“否”只删除图片库记录。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.No,
+        )
+        if choice == QMessageBox.StandardButton.Cancel:
+            return
+
+        remove_files = choice == QMessageBox.StandardButton.Yes
+        rows = load_index_rows()
+        rows_to_delete = [
+            row for row in rows if row.get("full_code", "").strip().upper() in selected_codes
+        ]
+        if remove_files:
+            for row in rows_to_delete:
+                output_path = Path(row.get("output_path", ""))
+                if output_path.exists():
+                    output_path.unlink()
+
+        remaining_rows = delete_index_rows(rows, selected_codes)
+        save_index_rows(remaining_rows)
+        self.status_label.setText(f"已删除 {len(selected_codes)} 条图片记录")
+        self._refresh_all()
 
     def _set_library_loading(self, visible: bool) -> None:
         if not hasattr(self, "library_loading_overlay"):
@@ -1408,7 +1478,9 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         browse = QPushButton("浏览")
+        browse.setMinimumHeight(34)
         browse.clicked.connect(lambda: self._browse_folder(line_edit))
         layout.addWidget(line_edit)
         layout.addWidget(browse)
@@ -1418,7 +1490,9 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         browse = QPushButton("选择文件")
+        browse.setMinimumHeight(34)
         browse.clicked.connect(lambda: self._browse_file(line_edit, file_filter))
         layout.addWidget(line_edit)
         layout.addWidget(browse)

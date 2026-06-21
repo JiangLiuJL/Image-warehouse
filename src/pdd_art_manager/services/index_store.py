@@ -61,3 +61,7 @@ def save_index_rows(rows: list[dict[str, str]], path: Path = IMAGE_INDEX_FILE) -
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in FIELDNAMES})
+
+
+def delete_index_rows(rows: list[dict[str, str]], full_codes: set[str]) -> list[dict[str, str]]:
+    return [row for row in rows if row.get("full_code", "").strip().upper() not in full_codes]
