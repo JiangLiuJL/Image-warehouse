@@ -5,7 +5,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 
 @dataclass(slots=True)
@@ -27,6 +27,8 @@ class OrderSummary:
 class ParsedOrders:
     order_counts: dict[str, int]
     remark_ignored_codes: list[tuple[str, int]]
+    blank_code_rows: list[dict[str, object]]
+    missing_rows: list[dict[str, object]]
 
 
 def load_order_rows(path: Path) -> list[list[str]]:
@@ -49,7 +51,7 @@ def load_order_rows(path: Path) -> list[list[str]]:
             ]
         finally:
             workbook.close()
-    raise ValueError("当前只支持导入 CSV 订单文件。")
+    raise ValueError("当前只支持导入 CSV 和 XLSX 订单文件。")
 
 
 def detect_default_columns(rows: list[list[str]]) -> tuple[int, int]:
@@ -97,28 +99,59 @@ def parse_order_rows_with_remarks(
 ) -> ParsedOrders:
     order_counts: dict[str, int] = {}
     remark_ignored_codes: list[tuple[str, int]] = []
+    blank_code_rows: list[dict[str, object]] = []
+    missing_rows: list[dict[str, object]] = []
     remark_columns = remark_columns or []
     data_rows = rows[1:] if skip_header else rows
+    found_non_empty_code = False
+
     for row in data_rows:
         if len(row) <= max(quantity_column, code_column):
             continue
+
         quantity_text = str(row[quantity_column]).strip()
-        full_code = str(row[code_column]).strip().upper()
-        if not full_code:
-            continue
         try:
             quantity = int(float(quantity_text))
         except ValueError:
             continue
         if quantity <= 0:
             continue
+
+        full_code = str(row[code_column]).strip().upper()
+        if not full_code:
+            blank_code_rows.append(
+                {
+                    "row_values": list(row),
+                    "reason": "商家编码为空",
+                    "full_code": "",
+                    "quantity": quantity,
+                }
+            )
+            continue
+
+        found_non_empty_code = True
         if any(len(row) > column and str(row[column]).strip() for column in remark_columns):
             remark_ignored_codes.append((full_code, quantity))
+            missing_rows.append(
+                {
+                    "row_values": list(row),
+                    "reason": "备注列不为空，已忽略",
+                    "full_code": full_code,
+                    "quantity": quantity,
+                }
+            )
             continue
+
         order_counts[full_code] = order_counts.get(full_code, 0) + quantity
+
+    if found_non_empty_code:
+        missing_rows.extend(blank_code_rows)
+
     return ParsedOrders(
         order_counts=order_counts,
         remark_ignored_codes=remark_ignored_codes,
+        blank_code_rows=blank_code_rows,
+        missing_rows=missing_rows,
     )
 
 
@@ -137,6 +170,8 @@ def build_print_job(
     output_root: Path,
     folder_name: str,
     forced_missing_codes: list[tuple[str, int]] | None = None,
+    source_headers: list[str] | None = None,
+    missing_rows: list[dict[str, object]] | None = None,
 ) -> PrintJobResult:
     target_root = output_root / folder_name
     target_root.mkdir(parents=True, exist_ok=True)
@@ -151,18 +186,36 @@ def build_print_job(
     total_copies = 0
     missing_codes: list[tuple[str, int]] = list(forced_missing_codes or [])
     forced_missing_map = {code: quantity for code, quantity in missing_codes}
+    missing_rows = list(missing_rows or [])
 
     for full_code, quantity in order_counts.items():
         if full_code in forced_missing_map:
             continue
+
         row = index_by_code.get(full_code)
         if row is None:
             missing_codes.append((full_code, quantity))
+            missing_rows.append(
+                {
+                    "row_values": [],
+                    "reason": "图库中未找到对应编码",
+                    "full_code": full_code,
+                    "quantity": quantity,
+                }
+            )
             continue
 
         source_path = Path(row.get("output_path", ""))
         if not source_path.exists():
             missing_codes.append((full_code, quantity))
+            missing_rows.append(
+                {
+                    "row_values": [],
+                    "reason": "成品图文件不存在",
+                    "full_code": full_code,
+                    "quantity": quantity,
+                }
+            )
             continue
 
         size_folder = f"{row.get('width_cm', '').strip()}-{row.get('height_cm', '').strip()}"
@@ -173,9 +226,12 @@ def build_print_job(
         completed_codes += 1
         total_copies += quantity
 
-    if missing_codes:
-        report_lines = [f"{code} x {quantity}" for code, quantity in missing_codes]
-        (target_root / "未匹配编码.txt").write_text("\n".join(report_lines), encoding="utf-8")
+    if missing_rows or missing_codes:
+        _write_missing_rows_xlsx(
+            target_root / "未匹配编码.xlsx",
+            source_headers=source_headers or [],
+            missing_rows=missing_rows,
+        )
 
     return PrintJobResult(
         output_folder=target_root,
@@ -183,3 +239,35 @@ def build_print_job(
         total_copies=total_copies,
         missing_codes=missing_codes,
     )
+
+
+def _write_missing_rows_xlsx(
+    path: Path,
+    source_headers: list[str],
+    missing_rows: list[dict[str, object]],
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "未匹配编码"
+
+    max_data_columns = max((len(item.get("row_values", [])) for item in missing_rows), default=0)
+    headers = list(source_headers)
+    while len(headers) < max_data_columns:
+        headers.append(f"第{len(headers) + 1}列")
+    headers.extend(["未匹配原因", "图片编码", "数量"])
+    sheet.append(headers)
+
+    for item in missing_rows:
+        row_values = list(item.get("row_values", []))
+        while len(row_values) < max_data_columns:
+            row_values.append("")
+        row_values.extend(
+            [
+                str(item.get("reason", "")),
+                str(item.get("full_code", "")),
+                str(item.get("quantity", "")),
+            ]
+        )
+        sheet.append(row_values)
+
+    workbook.save(path)

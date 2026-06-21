@@ -80,11 +80,19 @@ def test_build_print_job_writes_missing_code_report(tmp_path: Path) -> None:
         index_rows=[],
         output_root=output_root,
         folder_name="缺图测试",
+        source_headers=["商品", "订单号", "数量", "商家编码"],
+        missing_rows=[
+            {
+                "row_values": ["海报1", "1001", "2", "SG-9999-20-30"],
+                "reason": "图库中未找到对应编码",
+                "full_code": "SG-9999-20-30",
+                "quantity": 2,
+            }
+        ],
     )
 
-    report_path = output_root / "缺图测试" / "未匹配编码.txt"
+    report_path = output_root / "缺图测试" / "未匹配编码.xlsx"
     assert report_path.exists()
-    assert "SG-9999-20-30 x 2" in report_path.read_text(encoding="utf-8")
     assert result.completed_codes == 0
     assert result.missing_codes == [("SG-9999-20-30", 2)]
 
@@ -113,6 +121,15 @@ def test_build_print_job_can_force_codes_into_missing_report(tmp_path: Path) -> 
         output_root=output_root,
         folder_name="备注忽略",
         forced_missing_codes=[("SG-0001-20-30", 2)],
+        source_headers=["商品", "订单号", "数量", "商家编码"],
+        missing_rows=[
+            {
+                "row_values": ["海报1", "1001", "2", "SG-0001-20-30"],
+                "reason": "备注列不为空，已忽略",
+                "full_code": "SG-0001-20-30",
+                "quantity": 2,
+            }
+        ],
     )
 
     assert not (output_root / "备注忽略" / "20-30" / "各2" / "SG-0001-20-30.jpg").exists()
@@ -190,6 +207,32 @@ def test_parse_order_rows_ignores_codes_when_remark_columns_have_values() -> Non
     assert parsed.remark_ignored_codes == [
         ("SG-0002-30-40", 1),
         ("SG-0003-40-60", 3),
+    ]
+
+
+def test_parse_order_rows_marks_blank_codes_as_missing_when_other_codes_exist() -> None:
+    rows = [
+        ["商品", "订单号", "数量", "商家编码", "备注1", "备注2"],
+        ["海报1", "1001", "2", "SG-0001-20-30", "", ""],
+        ["海报2", "1002", "1", "", "", ""],
+    ]
+
+    parsed = parse_order_rows_with_remarks(
+        rows,
+        quantity_column=2,
+        code_column=3,
+        skip_header=True,
+        remark_columns=[4, 5],
+    )
+
+    assert parsed.order_counts == {"SG-0001-20-30": 2}
+    assert parsed.blank_code_rows == [
+        {
+            "row_values": ["海报2", "1002", "1", "", "", ""],
+            "reason": "商家编码为空",
+            "full_code": "",
+            "quantity": 1,
+        }
     ]
 
 

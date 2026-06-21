@@ -603,6 +603,7 @@ class MainWindow(QMainWindow):
         self.print_order_rows: list[list[str]] = []
         self.print_order_counts: dict[str, int] = {}
         self.print_remark_ignored_codes: list[tuple[str, int]] = []
+        self.print_missing_rows: list[dict[str, object]] = []
 
         form.addRow("订单文件", self._file_row(self.print_order_file_input, "订单文件 (*.xlsx *.csv);;所有文件 (*.*)"))
         form.addRow("打印文件夹名称", self.print_output_folder_name_input)
@@ -1219,6 +1220,8 @@ class MainWindow(QMainWindow):
             rows = load_order_rows(order_path)
             self.print_order_rows = rows
             self.print_order_counts = {}
+            self.print_remark_ignored_codes = []
+            self.print_missing_rows = []
             self._populate_print_preview(rows)
             self._populate_print_column_combos(rows)
             self.print_summary_label.setText("已读取订单预览，请确认数量列和图片编码列。")
@@ -1295,27 +1298,30 @@ class MainWindow(QMainWindow):
                 skip_header=True,
                 remark_columns=remark_columns,
             )
-            if not parsed.order_counts and not parsed.remark_ignored_codes:
+            if not parsed.order_counts and not parsed.missing_rows:
                 self.print_order_counts = {}
                 self.print_remark_ignored_codes = []
+                self.print_missing_rows = []
                 self.print_summary_label.setText("当前列设置下，没有识别到可用编码。请检查数量列和图片编码列。")
                 self._set_print_progress(0, "等待开始")
                 return
 
             self.print_order_counts = parsed.order_counts
             self.print_remark_ignored_codes = parsed.remark_ignored_codes
+            self.print_missing_rows = parsed.missing_rows
             summary = summarize_order_counts(parsed.order_counts)
             preview_lines = [f"{code} x {quantity}" for code, quantity in summary.preview_rows[:10]]
             preview_text = "\n".join(preview_lines)
             self.print_summary_label.setText(
                 f"已统计 {summary.total_codes} 个编码，合计 {summary.total_copies} 张。\n"
-                f"备注忽略 {len(parsed.remark_ignored_codes)} 个编码。\n\n"
+                f"未匹配行 {len(parsed.missing_rows)} 条。\n\n"
                 f"前几项预览：\n{preview_text}"
             )
             self._set_print_progress(60, "统计完成")
         except Exception as error:
             self.print_order_counts = {}
             self.print_remark_ignored_codes = []
+            self.print_missing_rows = []
             self._set_print_progress(0, "统计失败")
             self._warn(f"统计订单失败：{error}")
 
@@ -1360,6 +1366,8 @@ class MainWindow(QMainWindow):
                 output_root=output_root,
                 folder_name=folder_name,
                 forced_missing_codes=self.print_remark_ignored_codes,
+                source_headers=self.print_order_rows[0] if self.print_order_rows else [],
+                missing_rows=self.print_missing_rows,
             )
 
             self.latest_print_output = result.output_folder
@@ -1428,6 +1436,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "print_order_file_input") and line_edit is self.print_order_file_input:
                 self.print_order_rows = []
                 self.print_order_counts = {}
+                self.print_remark_ignored_codes = []
+                self.print_missing_rows = []
                 if hasattr(self, "print_preview_table"):
                     self.print_preview_table.setRowCount(0)
                     self.print_preview_table.setColumnCount(0)
