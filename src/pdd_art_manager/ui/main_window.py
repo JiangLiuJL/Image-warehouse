@@ -745,7 +745,12 @@ class MainWindow(QMainWindow):
                 full_code = make_full_code(base_code, size)
                 output_dir = shop.output_folder / size.code_suffix
                 output_path = output_dir / f"{full_code}.jpg"
-                output_width, output_height = generate_sized_image(original_copy, output_path, size)
+                output_width, output_height = generate_sized_image(
+                    original_copy,
+                    output_path,
+                    size,
+                    label=full_code,
+                )
                 append_index_row(
                     ImageIndexRow(
                         shop_name=shop.name,
