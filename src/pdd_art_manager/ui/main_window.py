@@ -57,8 +57,11 @@ from pdd_art_manager.services.index_store import (
 )
 from pdd_art_manager.services.print_job_service import (
     build_print_job,
+    detect_default_columns,
     load_order_rows,
     parse_order_rows,
+    parse_order_rows_with_remarks,
+    summarize_order_counts,
 )
 from pdd_art_manager.services.shop_store import load_shops, save_shops
 from PIL import Image, ImageOps
@@ -593,11 +596,31 @@ class MainWindow(QMainWindow):
         self.print_output_folder_name_input = QLineEdit()
         self.print_output_folder_name_input.setPlaceholderText("例如：6月21日打印")
         self.print_output_root_input = QLineEdit()
+        self.print_quantity_column_combo = QComboBox()
+        self.print_code_column_combo = QComboBox()
+        self.print_remark_column_1_combo = QComboBox()
+        self.print_remark_column_2_combo = QComboBox()
+        self.print_order_rows: list[list[str]] = []
+        self.print_order_counts: dict[str, int] = {}
+        self.print_remark_ignored_codes: list[tuple[str, int]] = []
 
         form.addRow("订单文件", self._file_row(self.print_order_file_input, "订单文件 (*.xlsx *.csv);;所有文件 (*.*)"))
         form.addRow("打印文件夹名称", self.print_output_folder_name_input)
         form.addRow("输出位置", self._path_row(self.print_output_root_input))
+        form.addRow("数量列", self.print_quantity_column_combo)
+        form.addRow("图片编码列", self.print_code_column_combo)
+        form.addRow("备注列1", self.print_remark_column_1_combo)
+        form.addRow("备注列2", self.print_remark_column_2_combo)
         panel_layout.addLayout(form)
+
+        preview_title = QLabel("订单预览")
+        preview_title.setObjectName("SectionTitle")
+        panel_layout.addWidget(preview_title)
+
+        self.print_preview_table = QTableWidget(0, 0)
+        self.print_preview_table.setMinimumHeight(180)
+        self._prepare_table(self.print_preview_table)
+        panel_layout.addWidget(self.print_preview_table)
 
         self.print_progress_label = QLabel("等待开始")
         self.print_progress_label.setObjectName("ProgressHint")
@@ -613,11 +636,17 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(self.print_summary_label)
 
         action_row = QHBoxLayout()
+        preview_button = QPushButton("读取预览")
+        preview_button.clicked.connect(self._load_print_order_preview)
+        summary_button = QPushButton("先统计")
+        summary_button.clicked.connect(self._preview_print_summary)
         start_button = QPushButton("开始生成")
         start_button.setObjectName("PrimaryButton")
         start_button.clicked.connect(self._generate_print_job)
         open_button = QPushButton("打开输出位置")
         open_button.clicked.connect(self._open_print_output_folder)
+        action_row.addWidget(preview_button)
+        action_row.addWidget(summary_button)
         action_row.addWidget(start_button)
         action_row.addWidget(open_button)
         action_row.addStretch()
@@ -1174,6 +1203,122 @@ class MainWindow(QMainWindow):
         self.status_label.setText(text)
         QApplication.processEvents()
 
+    def _load_print_order_preview(self) -> None:
+        order_path_text = self.print_order_file_input.text().strip()
+        if not order_path_text:
+            self._warn("请先选择订单文件。")
+            return
+
+        order_path = Path(order_path_text)
+        if not order_path.exists():
+            self._warn("订单文件不存在，请重新选择。")
+            return
+
+        try:
+            self._set_print_progress(10, "正在读取订单预览...")
+            rows = load_order_rows(order_path)
+            self.print_order_rows = rows
+            self.print_order_counts = {}
+            self._populate_print_preview(rows)
+            self._populate_print_column_combos(rows)
+            self.print_summary_label.setText("已读取订单预览，请确认数量列和图片编码列。")
+            self._set_print_progress(25, "预览已加载")
+        except Exception as error:
+            self._set_print_progress(0, "读取预览失败")
+            self._warn(f"读取订单预览失败：{error}")
+
+    def _populate_print_preview(self, rows: list[list[str]], preview_limit: int = 8) -> None:
+        column_count = max((len(row) for row in rows[:preview_limit]), default=0)
+        self.print_preview_table.setColumnCount(column_count)
+        self.print_preview_table.setRowCount(min(len(rows), preview_limit))
+        for row_index, row in enumerate(rows[:preview_limit]):
+            for column_index in range(column_count):
+                value = row[column_index] if column_index < len(row) else ""
+                self.print_preview_table.setItem(row_index, column_index, QTableWidgetItem(str(value).strip()))
+        if rows:
+            headers = []
+            header_row = rows[0]
+            for column_index in range(column_count):
+                header_text = header_row[column_index].strip() if column_index < len(header_row) else ""
+                headers.append(header_text or f"第{column_index + 1}列")
+            self.print_preview_table.setHorizontalHeaderLabels(headers)
+
+    def _populate_print_column_combos(self, rows: list[list[str]]) -> None:
+        self.print_quantity_column_combo.clear()
+        self.print_code_column_combo.clear()
+        self.print_remark_column_1_combo.clear()
+        self.print_remark_column_2_combo.clear()
+        column_count = max((len(row) for row in rows), default=0)
+        headers = rows[0] if rows else []
+        self.print_remark_column_1_combo.addItem("不使用", -1)
+        self.print_remark_column_2_combo.addItem("不使用", -1)
+        for index in range(column_count):
+            header_text = headers[index].strip() if index < len(headers) else ""
+            label = f"第{index + 1}列"
+            if header_text:
+                label = f"{label} - {header_text}"
+            self.print_quantity_column_combo.addItem(label, index)
+            self.print_code_column_combo.addItem(label, index)
+            self.print_remark_column_1_combo.addItem(label, index)
+            self.print_remark_column_2_combo.addItem(label, index)
+
+        quantity_index, code_index = detect_default_columns(rows)
+        self.print_quantity_column_combo.setCurrentIndex(max(0, quantity_index))
+        self.print_code_column_combo.setCurrentIndex(max(0, code_index))
+        if self.print_remark_column_1_combo.count() > 5:
+            self.print_remark_column_1_combo.setCurrentIndex(5)
+        if self.print_remark_column_2_combo.count() > 6:
+            self.print_remark_column_2_combo.setCurrentIndex(6)
+
+    def _preview_print_summary(self) -> None:
+        if not self.print_order_rows:
+            self._load_print_order_preview()
+            if not self.print_order_rows:
+                return
+
+        try:
+            self._set_print_progress(45, "正在统计订单...")
+            quantity_column = self.print_quantity_column_combo.currentData()
+            code_column = self.print_code_column_combo.currentData()
+            remark_columns = [
+                value
+                for value in (
+                    self.print_remark_column_1_combo.currentData(),
+                    self.print_remark_column_2_combo.currentData(),
+                )
+                if isinstance(value, int) and value >= 0
+            ]
+            parsed = parse_order_rows_with_remarks(
+                self.print_order_rows,
+                quantity_column=int(quantity_column),
+                code_column=int(code_column),
+                skip_header=True,
+                remark_columns=remark_columns,
+            )
+            if not parsed.order_counts and not parsed.remark_ignored_codes:
+                self.print_order_counts = {}
+                self.print_remark_ignored_codes = []
+                self.print_summary_label.setText("当前列设置下，没有识别到可用编码。请检查数量列和图片编码列。")
+                self._set_print_progress(0, "等待开始")
+                return
+
+            self.print_order_counts = parsed.order_counts
+            self.print_remark_ignored_codes = parsed.remark_ignored_codes
+            summary = summarize_order_counts(parsed.order_counts)
+            preview_lines = [f"{code} x {quantity}" for code, quantity in summary.preview_rows[:10]]
+            preview_text = "\n".join(preview_lines)
+            self.print_summary_label.setText(
+                f"已统计 {summary.total_codes} 个编码，合计 {summary.total_copies} 张。\n"
+                f"备注忽略 {len(parsed.remark_ignored_codes)} 个编码。\n\n"
+                f"前几项预览：\n{preview_text}"
+            )
+            self._set_print_progress(60, "统计完成")
+        except Exception as error:
+            self.print_order_counts = {}
+            self.print_remark_ignored_codes = []
+            self._set_print_progress(0, "统计失败")
+            self._warn(f"统计订单失败：{error}")
+
     def _generate_print_job(self) -> None:
         order_path_text = self.print_order_file_input.text().strip()
         folder_name = self.print_output_folder_name_input.text().strip()
@@ -1196,25 +1341,25 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self._set_print_progress(10, "正在读取订单文件...")
-            rows = load_order_rows(order_path)
-
-            self._set_print_progress(30, "正在统计图片数量...")
-            order_counts = parse_order_rows(rows)
-            if not order_counts:
-                self._warn("订单文件中没有识别到可用的图片编码和数量。")
-                self._set_print_progress(0, "等待开始")
-                return
+            if not self.print_order_rows:
+                self._load_print_order_preview()
+                if not self.print_order_rows:
+                    return
+            if not self.print_order_counts:
+                self._preview_print_summary()
+                if not self.print_order_counts:
+                    return
 
             self._set_print_progress(55, "正在匹配图片库记录...")
             index_rows = load_index_rows()
 
             self._set_print_progress(80, "正在生成打印文件夹...")
             result = build_print_job(
-                order_counts=order_counts,
+                order_counts=self.print_order_counts,
                 index_rows=index_rows,
                 output_root=output_root,
                 folder_name=folder_name,
+                forced_missing_codes=self.print_remark_ignored_codes,
             )
 
             self.latest_print_output = result.output_folder
@@ -1280,6 +1425,18 @@ class MainWindow(QMainWindow):
         file_path, _selected_filter = QFileDialog.getOpenFileName(self, "选择文件", "", file_filter)
         if file_path:
             line_edit.setText(file_path)
+            if hasattr(self, "print_order_file_input") and line_edit is self.print_order_file_input:
+                self.print_order_rows = []
+                self.print_order_counts = {}
+                if hasattr(self, "print_preview_table"):
+                    self.print_preview_table.setRowCount(0)
+                    self.print_preview_table.setColumnCount(0)
+                if hasattr(self, "print_summary_label"):
+                    self.print_summary_label.setText("生成结果会显示在这里。")
+                if hasattr(self, "print_progress_bar"):
+                    self.print_progress_bar.setValue(0)
+                if hasattr(self, "print_progress_label"):
+                    self.print_progress_label.setText("等待开始")
 
     def _page(self) -> QWidget:
         page = QWidget()
