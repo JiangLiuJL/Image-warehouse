@@ -449,6 +449,12 @@ class MainWindow(QMainWindow):
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self._refresh_library)
         toolbar.addWidget(refresh)
+        search = QPushButton("搜索")
+        search.clicked.connect(self._refresh_library)
+        toolbar.addWidget(search)
+        clear_filters = QPushButton("清空筛选")
+        clear_filters.clicked.connect(self._clear_library_filters)
+        toolbar.addWidget(clear_filters)
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
@@ -471,7 +477,7 @@ class MainWindow(QMainWindow):
         for index, (key, label) in enumerate(filter_fields):
             input_box = QLineEdit()
             input_box.setPlaceholderText(label)
-            input_box.textChanged.connect(self._refresh_library)
+            input_box.returnPressed.connect(self._refresh_library)
             self.library_filters[key] = input_box
             filter_layout.addWidget(input_box, index // 4, index % 4)
         layout.addWidget(filter_panel)
@@ -1008,6 +1014,13 @@ class MainWindow(QMainWindow):
             ):
                 filtered.append(row)
         return filtered
+
+    def _clear_library_filters(self) -> None:
+        if not hasattr(self, "library_filters"):
+            return
+        for filter_box in self.library_filters.values():
+            filter_box.clear()
+        self._refresh_library()
 
     def _library_thumbnail(self, path_text: str) -> QPixmap:
         path = Path(path_text)
