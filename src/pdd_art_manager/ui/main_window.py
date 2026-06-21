@@ -912,6 +912,8 @@ class MainWindow(QMainWindow):
     def _set_selected_image(self, path: Path) -> None:
         try:
             self.selected_image = path
+            self.generated_base_code = None
+            self.base_code_input.clear()
             info = read_image_info(path)
             dpi_text = self._format_dpi(info.dpi_x, info.dpi_y)
             self.image_info_label.setText(
