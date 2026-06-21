@@ -52,3 +52,12 @@ def load_index_rows(path: Path = IMAGE_INDEX_FILE) -> list[dict[str, str]]:
         return []
     with path.open("r", newline="", encoding="utf-8-sig") as file:
         return list(csv.DictReader(file))
+
+
+def save_index_rows(rows: list[dict[str, str]], path: Path = IMAGE_INDEX_FILE) -> None:
+    ensure_app_dirs()
+    with path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in FIELDNAMES})

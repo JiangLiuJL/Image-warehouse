@@ -49,7 +49,17 @@ from pdd_art_manager.services.code_generator import (
     normalize_shop_prefix,
 )
 from pdd_art_manager.services.image_processor import generate_sized_image, read_image_info
-from pdd_art_manager.services.index_store import append_index_row, load_base_codes, load_index_rows
+from pdd_art_manager.services.index_store import (
+    append_index_row,
+    load_base_codes,
+    load_index_rows,
+    save_index_rows,
+)
+from pdd_art_manager.services.print_job_service import (
+    build_print_job,
+    load_order_rows,
+    parse_order_rows,
+)
 from pdd_art_manager.services.shop_store import load_shops, save_shops
 from PIL import Image, ImageOps
 
@@ -189,6 +199,7 @@ class MainWindow(QMainWindow):
         self.shops = load_shops()
         self.selected_image: Path | None = None
         self.generated_base_code: str | None = None
+        self.editing_shop_prefix: str | None = None
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -251,7 +262,7 @@ class MainWindow(QMainWindow):
         caption.setObjectName("Caption")
 
         self.nav_buttons: list[QPushButton] = []
-        nav_items = [("总览", 0), ("上传图片", 1), ("店铺管理", 2), ("图片库", 3)]
+        nav_items = [("总览", 0), ("上传图片", 1), ("店铺管理", 2), ("图片库", 3), ("打印文件", 4)]
         side_layout.addWidget(brand)
         side_layout.addWidget(caption)
         side_layout.addSpacing(18)
@@ -274,6 +285,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_upload_page())
         self.pages.addWidget(self._build_shops_page())
         self.pages.addWidget(self._build_library_page())
+        self.pages.addWidget(self._build_print_jobs_page())
 
         layout.addWidget(sidebar)
         layout.addWidget(self.pages)
@@ -443,6 +455,51 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.shop_table)
         return page
 
+    def _build_shops_page(self) -> QWidget:
+        page = self._page()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(16)
+        layout.addWidget(self._page_title("店铺管理", "每个店铺都可以单独设置原图文件夹和成品图文件夹。"))
+
+        panel = self._panel()
+        panel_layout = QVBoxLayout(panel)
+        form = QFormLayout()
+        self.shop_name_input = QLineEdit()
+        self.shop_short_input = QLineEdit()
+        self.shop_prefix_input = QLineEdit()
+        self.shop_prefix_input.setMaxLength(2)
+        self.original_folder_input = QLineEdit()
+        self.output_folder_input = QLineEdit()
+
+        form.addRow("店铺名称", self.shop_name_input)
+        form.addRow("店铺简称", self.shop_short_input)
+        form.addRow("店铺前缀", self.shop_prefix_input)
+        form.addRow("原图文件夹", self._path_row(self.original_folder_input))
+        form.addRow("成品图文件夹", self._path_row(self.output_folder_input))
+        panel_layout.addLayout(form)
+
+        save_button = QPushButton("保存店铺")
+        save_button.setObjectName("PrimaryButton")
+        save_button.clicked.connect(self._save_shop)
+        self.cancel_shop_edit_button = QPushButton("取消编辑")
+        self.cancel_shop_edit_button.clicked.connect(self._clear_shop_form)
+        self.migrate_shop_button = QPushButton("迁移图片库")
+        self.migrate_shop_button.clicked.connect(self._migrate_shop_library)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(save_button)
+        button_row.addWidget(self.cancel_shop_edit_button)
+        button_row.addWidget(self.migrate_shop_button)
+        panel_layout.addLayout(button_row)
+        layout.addWidget(panel)
+
+        self.shop_table = QTableWidget(0, 5)
+        self.shop_table.setHorizontalHeaderLabels(["店铺", "前缀", "原图文件夹", "成品图文件夹", "启用"])
+        self._prepare_table(self.shop_table)
+        self.shop_table.itemSelectionChanged.connect(self._on_shop_selection_changed)
+        layout.addWidget(self.shop_table)
+        return page
+
     def _build_library_page(self) -> QWidget:
         page = self._page()
         layout = QVBoxLayout(page)
@@ -520,6 +577,55 @@ class MainWindow(QMainWindow):
         overlay_layout.addWidget(self.library_loading_bar, alignment=Qt.AlignmentFlag.AlignHCenter)
         overlay_layout.addStretch()
         self.library_loading_overlay.hide()
+        return page
+
+    def _build_print_jobs_page(self) -> QWidget:
+        page = self._page()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(16)
+        layout.addWidget(self._page_title("打印文件", "导入订单文件后，按尺寸和数量自动整理打印图片。"))
+
+        panel = self._panel()
+        panel_layout = QVBoxLayout(panel)
+        form = QFormLayout()
+
+        self.print_order_file_input = QLineEdit()
+        self.print_output_folder_name_input = QLineEdit()
+        self.print_output_folder_name_input.setPlaceholderText("例如：6月21日打印")
+        self.print_output_root_input = QLineEdit()
+
+        form.addRow("订单文件", self._file_row(self.print_order_file_input, "订单文件 (*.xlsx *.csv);;所有文件 (*.*)"))
+        form.addRow("打印文件夹名称", self.print_output_folder_name_input)
+        form.addRow("输出位置", self._path_row(self.print_output_root_input))
+        panel_layout.addLayout(form)
+
+        self.print_progress_label = QLabel("等待开始")
+        self.print_progress_label.setObjectName("ProgressHint")
+        self.print_progress_bar = QProgressBar()
+        self.print_progress_bar.setRange(0, 100)
+        self.print_progress_bar.setValue(0)
+        self.print_progress_bar.setFormat("%p%")
+        panel_layout.addWidget(self.print_progress_label)
+        panel_layout.addWidget(self.print_progress_bar)
+
+        self.print_summary_label = QLabel("生成结果会显示在这里。")
+        self.print_summary_label.setWordWrap(True)
+        panel_layout.addWidget(self.print_summary_label)
+
+        action_row = QHBoxLayout()
+        start_button = QPushButton("开始生成")
+        start_button.setObjectName("PrimaryButton")
+        start_button.clicked.connect(self._generate_print_job)
+        open_button = QPushButton("打开输出位置")
+        open_button.clicked.connect(self._open_print_output_folder)
+        action_row.addWidget(start_button)
+        action_row.addWidget(open_button)
+        action_row.addStretch()
+        panel_layout.addLayout(action_row)
+
+        layout.addWidget(panel)
+        layout.addStretch()
+        self.latest_print_output: Path | None = None
         return page
 
     def _choose_image(self) -> None:
@@ -1060,6 +1166,79 @@ class MainWindow(QMainWindow):
         self.library_loading_overlay.setVisible(visible)
         QApplication.processEvents()
 
+    def _set_print_progress(self, value: int, text: str) -> None:
+        if not hasattr(self, "print_progress_bar"):
+            return
+        self.print_progress_bar.setValue(value)
+        self.print_progress_label.setText(text)
+        self.status_label.setText(text)
+        QApplication.processEvents()
+
+    def _generate_print_job(self) -> None:
+        order_path_text = self.print_order_file_input.text().strip()
+        folder_name = self.print_output_folder_name_input.text().strip()
+        output_root_text = self.print_output_root_input.text().strip()
+
+        if not order_path_text:
+            self._warn("请先选择订单文件。")
+            return
+        if not folder_name:
+            self._warn("请填写打印文件夹名称。")
+            return
+        if not output_root_text:
+            self._warn("请先选择输出位置。")
+            return
+
+        order_path = Path(order_path_text)
+        output_root = Path(output_root_text)
+        if not order_path.exists():
+            self._warn("订单文件不存在，请重新选择。")
+            return
+
+        try:
+            self._set_print_progress(10, "正在读取订单文件...")
+            rows = load_order_rows(order_path)
+
+            self._set_print_progress(30, "正在统计图片数量...")
+            order_counts = parse_order_rows(rows)
+            if not order_counts:
+                self._warn("订单文件中没有识别到可用的图片编码和数量。")
+                self._set_print_progress(0, "等待开始")
+                return
+
+            self._set_print_progress(55, "正在匹配图片库记录...")
+            index_rows = load_index_rows()
+
+            self._set_print_progress(80, "正在生成打印文件夹...")
+            result = build_print_job(
+                order_counts=order_counts,
+                index_rows=index_rows,
+                output_root=output_root,
+                folder_name=folder_name,
+            )
+
+            self.latest_print_output = result.output_folder
+            self._set_print_progress(100, "生成完成")
+            missing_count = len(result.missing_codes)
+            self.print_summary_label.setText(
+                f"已生成 {result.completed_codes} 个编码，合计 {result.total_copies} 张。\n"
+                f"未匹配编码 {missing_count} 个。\n"
+                f"输出位置：{result.output_folder}"
+            )
+            self._info(
+                f"打印文件已生成。\n\n已生成编码：{result.completed_codes}\n"
+                f"未匹配编码：{missing_count}\n\n输出位置：\n{result.output_folder}"
+            )
+        except Exception as error:
+            self._set_print_progress(0, "生成失败")
+            self._warn(f"生成打印文件失败：{error}")
+
+    def _open_print_output_folder(self) -> None:
+        if self.latest_print_output is None or not self.latest_print_output.exists():
+            self._warn("当前还没有可打开的输出文件夹。")
+            return
+        os.startfile(self.latest_print_output)
+
     def _library_thumbnail(self, path_text: str) -> QPixmap:
         path = Path(path_text)
         if not path.exists():
@@ -1082,10 +1261,25 @@ class MainWindow(QMainWindow):
         layout.addWidget(browse)
         return container
 
+    def _file_row(self, line_edit: QLineEdit, file_filter: str) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        browse = QPushButton("选择文件")
+        browse.clicked.connect(lambda: self._browse_file(line_edit, file_filter))
+        layout.addWidget(line_edit)
+        layout.addWidget(browse)
+        return container
+
     def _browse_folder(self, line_edit: QLineEdit) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if folder:
             line_edit.setText(folder)
+
+    def _browse_file(self, line_edit: QLineEdit, file_filter: str) -> None:
+        file_path, _selected_filter = QFileDialog.getOpenFileName(self, "选择文件", "", file_filter)
+        if file_path:
+            line_edit.setText(file_path)
 
     def _page(self) -> QWidget:
         page = QWidget()
@@ -1139,6 +1333,226 @@ class MainWindow(QMainWindow):
 
     def _info(self, text: str) -> None:
         QMessageBox.information(self, "图片仓库", text)
+
+    def _save_shop(self) -> None:
+        try:
+            prefix = normalize_shop_prefix(self.shop_prefix_input.text())
+        except ValueError as error:
+            self._warn(str(error))
+            return
+
+        name = self.shop_name_input.text().strip()
+        if not name:
+            self._warn("请填写店铺名称。")
+            return
+
+        original_folder = Path(self.original_folder_input.text().strip())
+        output_folder = Path(self.output_folder_input.text().strip())
+        if not str(original_folder) or not str(output_folder):
+            self._warn("请填写原图文件夹和成品图文件夹。")
+            return
+
+        editing_prefix = self.editing_shop_prefix
+        for item in self.shops:
+            if item.prefix == prefix and item.prefix != editing_prefix:
+                self._warn("店铺前缀已存在，请更换一个前缀。")
+                return
+
+        shop = Shop(
+            name=name,
+            short_name=self.shop_short_input.text().strip() or name,
+            prefix=prefix,
+            original_folder=original_folder,
+            output_folder=output_folder,
+        )
+        if editing_prefix:
+            self.shops = [item for item in self.shops if item.prefix != editing_prefix]
+        else:
+            self.shops = [item for item in self.shops if item.prefix != prefix]
+        self.shops.append(shop)
+        save_shops(self.shops)
+        self._clear_shop_form()
+        self.status_label.setText(f"已保存店铺：{shop.name}")
+        self._refresh_all()
+
+    def _selected_shop_for_manage(self) -> Shop | None:
+        if self.editing_shop_prefix:
+            for shop in self.shops:
+                if shop.prefix == self.editing_shop_prefix:
+                    return shop
+        row = self.shop_table.currentRow()
+        if row < 0 or row >= len(self.shops):
+            return None
+        return self.shops[row]
+
+    def _on_shop_selection_changed(self) -> None:
+        shop = self._selected_shop_for_manage()
+        if shop is not None:
+            self._load_shop_into_form(shop)
+
+    def _load_shop_into_form(self, shop: Shop) -> None:
+        self.editing_shop_prefix = shop.prefix
+        self.shop_name_input.setText(shop.name)
+        self.shop_short_input.setText(shop.short_name)
+        self.shop_prefix_input.setText(shop.prefix)
+        self.original_folder_input.setText(str(shop.original_folder))
+        self.output_folder_input.setText(str(shop.output_folder))
+        self.status_label.setText(f"已选中店铺：{shop.name}")
+
+    def _clear_shop_form(self) -> None:
+        self.editing_shop_prefix = None
+        self.shop_name_input.clear()
+        self.shop_short_input.clear()
+        self.shop_prefix_input.clear()
+        self.original_folder_input.clear()
+        self.output_folder_input.clear()
+        if hasattr(self, "shop_table"):
+            self.shop_table.blockSignals(True)
+            self.shop_table.clearSelection()
+            self.shop_table.blockSignals(False)
+
+    def _migrate_shop_library(self) -> None:
+        shop = self._selected_shop_for_manage()
+        if shop is None:
+            self._warn("请先在店铺表格中选择一个店铺。")
+            return
+
+        new_original_folder = Path(self.original_folder_input.text().strip())
+        new_output_folder = Path(self.output_folder_input.text().strip())
+        if not str(new_original_folder) or not str(new_output_folder):
+            self._warn("请先填写新的原图和成品图文件夹路径。")
+            return
+
+        if new_original_folder == shop.original_folder and new_output_folder == shop.output_folder:
+            self._warn("新的文件夹路径与当前一致，无需迁移。")
+            return
+
+        confirmed = QMessageBox.question(
+            self,
+            "图片仓库",
+            f"将迁移店铺“{shop.name}”的图片库，并同步更新图片索引。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            moved_original = self._move_folder_contents(shop.original_folder, new_original_folder)
+            moved_output = self._move_folder_contents(shop.output_folder, new_output_folder)
+            updated_prefix = normalize_shop_prefix(self.shop_prefix_input.text())
+            updated_name = self.shop_name_input.text().strip() or shop.name
+            self._rewrite_shop_index_paths(
+                shop,
+                updated_name,
+                updated_prefix,
+                new_original_folder,
+                new_output_folder,
+            )
+            updated_shop = Shop(
+                name=updated_name,
+                short_name=self.shop_short_input.text().strip() or updated_name,
+                prefix=updated_prefix,
+                original_folder=new_original_folder,
+                output_folder=new_output_folder,
+                enabled=shop.enabled,
+                remark=shop.remark,
+            )
+            self.shops = [item for item in self.shops if item.prefix != shop.prefix]
+            self.shops.append(updated_shop)
+            save_shops(self.shops)
+            self.editing_shop_prefix = updated_shop.prefix
+            self.status_label.setText(f"已完成迁移：原图 {moved_original} 项，成品图 {moved_output} 项")
+            self._refresh_all()
+            self._load_shop_into_form(updated_shop)
+            self._info("图片库迁移完成，图库索引也已同步更新。")
+        except Exception as error:
+            self._warn(f"迁移失败：{error}")
+
+    def _move_folder_contents(self, source: Path, target: Path) -> int:
+        source = source.expanduser()
+        target = target.expanduser()
+        target.mkdir(parents=True, exist_ok=True)
+        if not source.exists():
+            return 0
+        try:
+            if source.resolve() == target.resolve():
+                return 0
+        except OSError:
+            pass
+
+        moved_count = 0
+        for item in list(source.iterdir()):
+            destination = target / item.name
+            if destination.exists():
+                if item.is_dir() and destination.is_dir():
+                    moved_count += self._move_folder_contents(item, destination)
+                    if item.exists() and not any(item.iterdir()):
+                        item.rmdir()
+                    continue
+                raise FileExistsError(f"目标中已存在同名文件：{destination}")
+            shutil.move(str(item), str(destination))
+            moved_count += 1
+        return moved_count
+
+    def _rewrite_shop_index_paths(
+        self,
+        shop: Shop,
+        updated_name: str,
+        updated_prefix: str,
+        new_original_folder: Path,
+        new_output_folder: Path,
+    ) -> None:
+        rows = load_index_rows()
+        updated_rows: list[dict[str, str]] = []
+        old_original = str(shop.original_folder)
+        old_output = str(shop.output_folder)
+        for row in rows:
+            updated_row = dict(row)
+            if row.get("shop_prefix") == shop.prefix:
+                updated_row["shop_name"] = updated_name
+                updated_row["shop_prefix"] = updated_prefix
+                updated_row["original_path"] = self._replace_index_path(
+                    row.get("original_path", ""),
+                    old_original,
+                    str(new_original_folder),
+                )
+                updated_row["output_path"] = self._replace_index_path(
+                    row.get("output_path", ""),
+                    old_output,
+                    str(new_output_folder),
+                )
+            updated_rows.append(updated_row)
+        save_index_rows(updated_rows)
+
+    def _replace_index_path(self, value: str, old_root: str, new_root: str) -> str:
+        if not value:
+            return value
+        try:
+            relative = Path(value).relative_to(Path(old_root))
+        except (ValueError, OSError):
+            return value
+        return str(Path(new_root) / relative)
+
+    def _refresh_shops_table(self) -> None:
+        self.shop_table.setRowCount(len(self.shops))
+        selected_row = -1
+        for row, shop in enumerate(self.shops):
+            values = [
+                shop.name,
+                shop.prefix,
+                str(shop.original_folder),
+                str(shop.output_folder),
+                "是" if shop.enabled else "否",
+            ]
+            for column, value in enumerate(values):
+                self.shop_table.setItem(row, column, QTableWidgetItem(value))
+            if self.editing_shop_prefix and shop.prefix == self.editing_shop_prefix:
+                selected_row = row
+        if selected_row >= 0:
+            self.shop_table.blockSignals(True)
+            self.shop_table.selectRow(selected_row)
+            self.shop_table.blockSignals(False)
 
     def _apply_style(self) -> None:
         QApplication.instance().setStyleSheet(
