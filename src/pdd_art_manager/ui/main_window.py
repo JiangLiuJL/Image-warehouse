@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import sys
 import os
+import time
 from io import BytesIO
 from ctypes import c_uint, c_void_p, create_unicode_buffer, windll
 from ctypes.wintypes import MAX_PATH
@@ -183,6 +184,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         ensure_app_dirs()
+        self._cleanup_preview_cache()
         self.shops = load_shops()
         self.selected_image: Path | None = None
         self.generated_base_code: str | None = None
@@ -450,11 +452,38 @@ class MainWindow(QMainWindow):
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
-        self.library_table = QTableWidget(0, 8)
+        filter_panel = self._panel()
+        filter_layout = QGridLayout(filter_panel)
+        filter_layout.setContentsMargins(10, 8, 10, 8)
+        filter_layout.setHorizontalSpacing(8)
+        filter_layout.setVerticalSpacing(6)
+        self.library_filters: dict[str, QLineEdit] = {}
+        filter_fields = [
+            ("full_code", "编码"),
+            ("shop_name", "店铺"),
+            ("size", "尺寸"),
+            ("dpi", "DPI"),
+            ("pixels", "像素"),
+            ("original_name", "原图"),
+            ("output_path", "成品图"),
+            ("created_at", "生成时间"),
+        ]
+        for index, (key, label) in enumerate(filter_fields):
+            input_box = QLineEdit()
+            input_box.setPlaceholderText(label)
+            input_box.textChanged.connect(self._refresh_library)
+            self.library_filters[key] = input_box
+            filter_layout.addWidget(input_box, index // 4, index % 4)
+        layout.addWidget(filter_panel)
+
+        self.library_rows: list[dict[str, str]] = []
+        self.library_table = QTableWidget(0, 9)
         self.library_table.setHorizontalHeaderLabels(
-            ["编码", "店铺", "尺寸", "DPI", "像素", "原图", "成品图", "生成时间"]
+            ["缩略图", "编码", "店铺", "尺寸", "DPI", "像素", "原图", "成品图", "生成时间"]
         )
         self._prepare_table(self.library_table)
+        self.library_table.setSortingEnabled(True)
+        self.library_table.verticalHeader().setDefaultSectionSize(58)
         layout.addWidget(self.library_table)
         return page
 
@@ -492,7 +521,7 @@ class MainWindow(QMainWindow):
             if image.isNull():
                 self._warn("剪贴板里没有可用图片。可以复制图片文件，或复制截图/网页图片后再粘贴。")
                 return
-            paste_dir = DATA_DIR / "clipboard_uploads"
+            paste_dir = self._preview_cache_dir()
             paste_dir.mkdir(parents=True, exist_ok=True)
             path = paste_dir / f"粘贴图片_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             if not image.save(str(path), "PNG"):
@@ -646,11 +675,40 @@ class MainWindow(QMainWindow):
         return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and path.exists()
 
     def _cache_clipboard_file(self, path: Path) -> Path:
-        paste_dir = DATA_DIR / "clipboard_uploads"
+        self._cleanup_preview_cache()
+        paste_dir = self._preview_cache_dir()
         paste_dir.mkdir(parents=True, exist_ok=True)
         cached_path = paste_dir / f"粘贴文件_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix.lower()}"
         shutil.copy2(path, cached_path)
         return cached_path
+
+    def _preview_cache_dir(self) -> Path:
+        return DATA_DIR / "clipboard_uploads"
+
+    def _cleanup_preview_cache(self, max_age_hours: int = 24, max_files: int = 50) -> None:
+        cache_dir = self._preview_cache_dir()
+        if not cache_dir.exists():
+            return
+
+        now = time.time()
+        files = [path for path in cache_dir.iterdir() if path.is_file()]
+        for path in files:
+            try:
+                if now - path.stat().st_mtime > max_age_hours * 3600:
+                    path.unlink()
+            except OSError:
+                continue
+
+        files = sorted(
+            [path for path in cache_dir.iterdir() if path.is_file()],
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for path in files[max_files:]:
+            try:
+                path.unlink()
+            except OSError:
+                continue
 
     def _set_selected_image(self, path: Path) -> None:
         try:
@@ -896,10 +954,12 @@ class MainWindow(QMainWindow):
                 self.shop_table.setItem(row, column, QTableWidgetItem(value))
 
     def _refresh_library(self) -> None:
-        rows = load_index_rows()
+        rows = self._filtered_library_rows(load_index_rows())
+        self.library_table.setSortingEnabled(False)
         self.library_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             values = [
+                "",
                 row.get("full_code", ""),
                 row.get("shop_name", ""),
                 f"{row.get('width_cm', '')} x {row.get('height_cm', '')}",
@@ -909,8 +969,52 @@ class MainWindow(QMainWindow):
                 row.get("output_path", ""),
                 row.get("created_at", ""),
             ]
+            thumbnail = self._library_thumbnail(row.get("output_path", ""))
+            thumbnail_label = QLabel()
+            thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if not thumbnail.isNull():
+                thumbnail_label.setPixmap(
+                    thumbnail.scaled(
+                        46,
+                        46,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            self.library_table.setCellWidget(row_index, 0, thumbnail_label)
             for column, value in enumerate(values):
                 self.library_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.library_table.setSortingEnabled(True)
+
+    def _filtered_library_rows(self, rows: list[dict[str, str]]) -> list[dict[str, str]]:
+        if not hasattr(self, "library_filters"):
+            return rows
+        filtered: list[dict[str, str]] = []
+        for row in rows:
+            row_values = {
+                "full_code": row.get("full_code", ""),
+                "shop_name": row.get("shop_name", ""),
+                "size": f"{row.get('width_cm', '')} x {row.get('height_cm', '')}",
+                "dpi": row.get("dpi", ""),
+                "pixels": f"{row.get('output_width_px', '')} x {row.get('output_height_px', '')}",
+                "original_name": row.get("original_name", ""),
+                "output_path": row.get("output_path", ""),
+                "created_at": row.get("created_at", ""),
+            }
+            if all(
+                filter_box.text().strip().lower() in row_values[key].lower()
+                for key, filter_box in self.library_filters.items()
+                if filter_box.text().strip()
+            ):
+                filtered.append(row)
+        return filtered
+
+    def _library_thumbnail(self, path_text: str) -> QPixmap:
+        path = Path(path_text)
+        if not path.exists():
+            return QPixmap()
+        pixmap, _error = self._load_preview_pixmap(path)
+        return pixmap
 
     def _set_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
