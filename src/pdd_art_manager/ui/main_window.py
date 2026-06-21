@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -198,9 +199,12 @@ class MainWindow(QMainWindow):
         paste_shortcut = QShortcut(QKeySequence.StandardKey.Paste, self)
         paste_shortcut.activated.connect(self._paste_image_from_clipboard)
         QApplication.instance().installEventFilter(self)
+        self.library_content.installEventFilter(self)
         self._refresh_all()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: ANN001, N802
+        if hasattr(self, "library_loading_overlay") and watched is self.library_content and event.type() == QEvent.Type.Resize:
+            self.library_loading_overlay.setGeometry(self.library_content.rect())
         if event.type() == QEvent.Type.DragEnter:
             path = self._image_path_from_drop(event.mimeData())
             if path is not None:
@@ -445,6 +449,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
         layout.addWidget(self._page_title("图片库", "这里显示保存在本地 CSV 索引中的图片生成记录。"))
 
+        self.library_content = QWidget()
+        content_layout = QVBoxLayout(self.library_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(16)
+
         toolbar = QHBoxLayout()
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self._refresh_library)
@@ -456,7 +465,7 @@ class MainWindow(QMainWindow):
         clear_filters.clicked.connect(self._clear_library_filters)
         toolbar.addWidget(clear_filters)
         toolbar.addStretch()
-        layout.addLayout(toolbar)
+        content_layout.addLayout(toolbar)
 
         filter_panel = self._panel()
         filter_layout = QGridLayout(filter_panel)
@@ -480,7 +489,7 @@ class MainWindow(QMainWindow):
             input_box.returnPressed.connect(self._refresh_library)
             self.library_filters[key] = input_box
             filter_layout.addWidget(input_box, index // 4, index % 4)
-        layout.addWidget(filter_panel)
+        content_layout.addWidget(filter_panel)
 
         self.library_rows: list[dict[str, str]] = []
         self.library_table = QTableWidget(0, 9)
@@ -490,7 +499,27 @@ class MainWindow(QMainWindow):
         self._prepare_table(self.library_table)
         self.library_table.setSortingEnabled(True)
         self.library_table.verticalHeader().setDefaultSectionSize(58)
-        layout.addWidget(self.library_table)
+        content_layout.addWidget(self.library_table)
+
+        layout.addWidget(self.library_content)
+
+        self.library_loading_overlay = QFrame(self.library_content)
+        self.library_loading_overlay.setObjectName("LibraryLoadingOverlay")
+        overlay_layout = QVBoxLayout(self.library_loading_overlay)
+        overlay_layout.setContentsMargins(24, 24, 24, 24)
+        overlay_layout.setSpacing(12)
+        overlay_layout.addStretch()
+        self.library_loading_label = QLabel("正在搜索，请稍候...")
+        self.library_loading_label.setObjectName("LoadingLabel")
+        self.library_loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.library_loading_bar = QProgressBar()
+        self.library_loading_bar.setRange(0, 0)
+        self.library_loading_bar.setTextVisible(False)
+        self.library_loading_bar.setFixedWidth(220)
+        overlay_layout.addWidget(self.library_loading_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+        overlay_layout.addWidget(self.library_loading_bar, alignment=Qt.AlignmentFlag.AlignHCenter)
+        overlay_layout.addStretch()
+        self.library_loading_overlay.hide()
         return page
 
     def _choose_image(self) -> None:
@@ -960,6 +989,7 @@ class MainWindow(QMainWindow):
                 self.shop_table.setItem(row, column, QTableWidgetItem(value))
 
     def _refresh_library(self) -> None:
+        self._set_library_loading(True)
         rows = self._filtered_library_rows(load_index_rows())
         self.library_table.setSortingEnabled(False)
         self.library_table.setRowCount(len(rows))
@@ -991,6 +1021,7 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.library_table.setItem(row_index, column, QTableWidgetItem(value))
         self.library_table.setSortingEnabled(True)
+        self._set_library_loading(False)
 
     def _filtered_library_rows(self, rows: list[dict[str, str]]) -> list[dict[str, str]]:
         if not hasattr(self, "library_filters"):
@@ -1021,6 +1052,13 @@ class MainWindow(QMainWindow):
         for filter_box in self.library_filters.values():
             filter_box.clear()
         self._refresh_library()
+
+    def _set_library_loading(self, visible: bool) -> None:
+        if not hasattr(self, "library_loading_overlay"):
+            return
+        self.library_loading_overlay.setGeometry(self.library_content.rect())
+        self.library_loading_overlay.setVisible(visible)
+        QApplication.processEvents()
 
     def _library_thumbnail(self, path_text: str) -> QPixmap:
         path = Path(path_text)
@@ -1195,6 +1233,17 @@ class MainWindow(QMainWindow):
                 background: #f7faf8;
                 border: 1px solid #dfe7e2;
                 border-radius: 8px;
+            }
+            #LibraryLoadingOverlay {
+                background: rgba(246, 247, 244, 220);
+                border: 1px solid #dde4df;
+                border-radius: 8px;
+            }
+            #LoadingLabel {
+                font-size: 15px;
+                font-weight: 600;
+                color: #25332f;
+                background: transparent;
             }
             QPushButton {
                 background: #ffffff;
