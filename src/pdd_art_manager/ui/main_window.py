@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QThread, Qt, Signal
 from PySide6.QtGui import QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -42,6 +42,9 @@ from PySide6.QtWidgets import (
 
 from pdd_art_manager.config import APP_NAME, DATA_DIR, ensure_app_dirs
 from pdd_art_manager.models import ImageIndexRow, Shop, SizeSpec
+from pdd_art_manager.services.batch_upload_service import assign_batch_base_codes
+from pdd_art_manager.services.batch_generation_service import build_batch_generation_tasks
+from pdd_art_manager.services.library_thumbnail_service import build_thumbnail_jobs
 from pdd_art_manager.services.code_generator import (
     make_base_code,
     make_full_code,
@@ -195,6 +198,26 @@ class SizeNumberInput(QWidget):
         self.input.setText(str(max(self.minimum, min(self.maximum, self.value() + amount))))
 
 
+class LibraryThumbnailWorker(QObject):
+    thumbnail_loaded = Signal(int, object)
+    thumbnail_failed = Signal(int)
+    finished = Signal()
+
+    def __init__(self, jobs: list[tuple[int, Path]], loader) -> None:  # noqa: ANN001
+        super().__init__()
+        self.jobs = jobs
+        self.loader = loader
+
+    def run(self) -> None:
+        for row_index, path in self.jobs:
+            pixmap, _error = self.loader(path)
+            if pixmap.isNull():
+                self.thumbnail_failed.emit(row_index)
+            else:
+                self.thumbnail_loaded.emit(row_index, pixmap)
+        self.finished.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -202,6 +225,16 @@ class MainWindow(QMainWindow):
         self._cleanup_preview_cache()
         self.shops = load_shops()
         self.selected_image: Path | None = None
+        self.batch_images: list[Path] = []
+        self.batch_base_codes: list[tuple[Path, str]] = []
+        self.batch_tasks: list[tuple[Path, str, SizeSpec]] = []
+        self.batch_task_index = 0
+        self.batch_task_created = 0
+        self.batch_task_total = 0
+        self.batch_task_shop: Shop | None = None
+        self.library_deferred_load_requested = False
+        self.library_thumbnail_thread: QThread | None = None
+        self.library_thumbnail_worker: LibraryThumbnailWorker | None = None
         self.generated_base_code: str | None = None
         self.editing_shop_prefix: str | None = None
 
@@ -215,7 +248,7 @@ class MainWindow(QMainWindow):
         paste_shortcut.activated.connect(self._paste_image_from_clipboard)
         QApplication.instance().installEventFilter(self)
         self.library_content.installEventFilter(self)
-        self._refresh_all()
+        self._refresh_all(load_library=False)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: ANN001, N802
         if hasattr(self, "library_loading_overlay") and watched is self.library_content and event.type() == QEvent.Type.Resize:
@@ -352,6 +385,8 @@ class MainWindow(QMainWindow):
         upload_actions = QHBoxLayout()
         choose = QPushButton("选择图片")
         choose.clicked.connect(self._choose_image)
+        choose_batch = QPushButton("批量上传")
+        choose_batch.clicked.connect(self._choose_images_batch)
         paste_button = QPushButton("粘贴图片")
         paste_button.clicked.connect(self._paste_image_from_clipboard)
         self.diagnose_button = QPushButton("诊断粘贴")
@@ -359,10 +394,17 @@ class MainWindow(QMainWindow):
         open_diag_button = QPushButton("打开诊断")
         open_diag_button.clicked.connect(self._open_diagnostics_folder)
         upload_actions.addWidget(choose)
+        upload_actions.addWidget(choose_batch)
         upload_actions.addWidget(paste_button)
         upload_actions.addWidget(self.diagnose_button)
         upload_actions.addWidget(open_diag_button)
         left_layout.addLayout(upload_actions)
+
+        self.batch_table = QTableWidget(0, 2)
+        self.batch_table.setHorizontalHeaderLabels(["图片", "基础编码"])
+        self.batch_table.setMinimumHeight(150)
+        self._prepare_table(self.batch_table)
+        left_layout.addWidget(self.batch_table)
 
         right = self._panel()
         form_layout = QVBoxLayout(right)
@@ -418,6 +460,20 @@ class MainWindow(QMainWindow):
         self.generate_button.setMinimumHeight(44)
         self.generate_button.clicked.connect(self._generate_images)
         form_layout.addWidget(self.generate_button)
+
+        self.batch_progress_label = QLabel("批量任务未开始")
+        self.batch_progress_label.setWordWrap(True)
+        self.batch_progress_bar = QProgressBar()
+        self.batch_progress_bar.setRange(0, 100)
+        self.batch_progress_bar.setValue(0)
+        self.batch_progress_bar.setFormat("%p%")
+        form_layout.addWidget(self.batch_progress_label)
+        form_layout.addWidget(self.batch_progress_bar)
+
+        self.generate_batch_button = QPushButton("批量生成所选尺寸")
+        self.generate_batch_button.setMinimumHeight(40)
+        self.generate_batch_button.clicked.connect(self._generate_batch_images)
+        form_layout.addWidget(self.generate_batch_button)
 
         body.addWidget(left, 3)
         body.addWidget(right, 2)
@@ -517,10 +573,10 @@ class MainWindow(QMainWindow):
 
         toolbar = QHBoxLayout()
         refresh = QPushButton("刷新")
-        refresh.clicked.connect(self._refresh_library)
+        refresh.clicked.connect(lambda: self._refresh_library(load_thumbnails=True))
         toolbar.addWidget(refresh)
         search = QPushButton("搜索")
-        search.clicked.connect(self._refresh_library)
+        search.clicked.connect(lambda: self._refresh_library(load_thumbnails=True))
         toolbar.addWidget(search)
         delete_record = QPushButton("删除所选")
         delete_record.clicked.connect(self._delete_selected_library_rows)
@@ -585,6 +641,7 @@ class MainWindow(QMainWindow):
         overlay_layout.addWidget(self.library_loading_bar, alignment=Qt.AlignmentFlag.AlignHCenter)
         overlay_layout.addStretch()
         self.library_loading_overlay.hide()
+        self.library_rows = []
         return page
 
     def _build_print_jobs_page(self) -> QWidget:
@@ -694,7 +751,41 @@ class MainWindow(QMainWindow):
             "图片文件 (*.jpg *.jpeg *.png *.webp)",
         )
         if path:
+            self.batch_images = []
+            self.batch_base_codes = []
+            self._refresh_batch_table()
             self._set_selected_image(Path(path))
+
+    def _choose_images_batch(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "批量选择图片",
+            "",
+            "图片文件 (*.jpg *.jpeg *.png *.webp)",
+        )
+        if not paths:
+            return
+
+        shop = self._selected_shop()
+        if shop is None:
+            self._warn("请先新增或选择一个店铺。")
+            return
+
+        image_paths = [Path(path) for path in paths]
+        self.batch_images = image_paths
+        assigned = assign_batch_base_codes(
+            image_paths=image_paths,
+            existing_base_codes=load_base_codes(),
+            shop_prefix=shop.prefix,
+        )
+        self.batch_base_codes = [
+            (path, base_code)
+            for path, (_name, base_code) in zip(image_paths, assigned, strict=False)
+        ]
+        self._refresh_batch_table()
+        self._set_batch_progress(0, f"已加入 {len(image_paths)} 张图片，等待批量生成。")
+        self._set_selected_image(image_paths[0])
+        self.status_label.setText(f"已加入 {len(image_paths)} 张图片，已自动生成批量编码。")
 
     def _paste_image_from_clipboard(self) -> None:
         try:
@@ -991,52 +1082,132 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            info = read_image_info(self.selected_image)
-            shop.original_folder.mkdir(parents=True, exist_ok=True)
-            shop.output_folder.mkdir(parents=True, exist_ok=True)
-
-            original_copy = shop.original_folder / f"{self.selected_image.stem}.jpg"
-            with Image.open(self.selected_image) as original_image:
-                converted_original = ImageOps.exif_transpose(original_image).convert("RGB")
-                converted_original.save(original_copy, format="JPEG", quality=95)
-
-            created = 0
-            for size in sizes:
-                full_code = make_full_code(base_code, size)
-                output_dir = shop.output_folder / size.code_suffix
-                output_path = output_dir / f"{full_code}.jpg"
-                output_width, output_height = generate_sized_image(
-                    original_copy,
-                    output_path,
-                    size,
-                    label=full_code,
-                )
-                append_index_row(
-                    ImageIndexRow(
-                        shop_name=shop.name,
-                        shop_prefix=shop.prefix,
-                        base_code=base_code,
-                        full_code=full_code,
-                        original_name=original_copy.name,
-                        original_path=original_copy,
-                        output_path=output_path,
-                        width_cm=size.width_cm,
-                        height_cm=size.height_cm,
-                        dpi=size.dpi,
-                        width_px=info.width_px,
-                        height_px=info.height_px,
-                        output_width_px=output_width,
-                        output_height_px=output_height,
-                        file_format="JPG",
-                        created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    )
-                )
-                created += 1
+            created = self._generate_image_set(shop, self.selected_image, base_code, sizes)
             self.status_label.setText(f"已生成 {created} 个图片文件。")
             self._refresh_all()
             self._info(f"已生成 {created} 个图片文件。")
         except Exception as error:
             self._warn(f"生成图片失败：{error}")
+
+    def _generate_batch_images(self) -> None:
+        if not self.batch_base_codes:
+            self._warn("请先批量选择图片。")
+            return
+
+        shop = self._selected_shop()
+        if shop is None:
+            self._warn("请先新增或选择一个店铺。")
+            return
+
+        sizes = self._selected_sizes()
+        if not sizes:
+            self._warn("请至少选择一个尺寸。")
+            return
+
+        try:
+            self.batch_tasks = build_batch_generation_tasks(self.batch_base_codes, sizes)
+            self.batch_task_index = 0
+            self.batch_task_created = 0
+            self.batch_task_total = max(1, len(self.batch_tasks))
+            self.batch_task_shop = shop
+            self._set_batch_progress(0, "正在准备批量任务...")
+            self.generate_batch_button.setEnabled(False)
+            QTimer.singleShot(0, self._process_next_batch_task)
+        except Exception as error:
+            self._set_batch_progress(0, "批量生成失败")
+            self.generate_batch_button.setEnabled(True)
+            self._warn(f"批量生成图片失败：{error}")
+
+    def _process_next_batch_task(self) -> None:
+        if self.batch_task_index >= len(self.batch_tasks):
+            self.generate_batch_button.setEnabled(True)
+            self._set_batch_progress(100, "批量生成完成")
+            self.status_label.setText(f"已批量生成 {self.batch_task_created} 个图片文件。")
+            self._refresh_all()
+            self._info(f"已批量生成 {self.batch_task_created} 个图片文件。")
+            return
+
+        if self.batch_task_shop is None:
+            self.generate_batch_button.setEnabled(True)
+            self._set_batch_progress(0, "批量生成失败")
+            self._warn("请先新增或选择一个店铺。")
+            return
+
+        image_path, base_code, size = self.batch_tasks[self.batch_task_index]
+        current_step = self.batch_task_index + 1
+        self._set_batch_progress(
+            int((current_step - 1) / self.batch_task_total * 100),
+            f"正在处理第 {current_step}/{self.batch_task_total} 步：{image_path.name} {size.width_cm}x{size.height_cm}",
+        )
+        try:
+            self.batch_task_created += self._generate_image_set(
+                self.batch_task_shop,
+                image_path,
+                base_code,
+                [size],
+            )
+            self.batch_task_index += 1
+            QTimer.singleShot(0, self._process_next_batch_task)
+        except Exception as error:
+            self.generate_batch_button.setEnabled(True)
+            self._set_batch_progress(0, "批量生成失败")
+            self._warn(f"批量生成图片失败：{error}")
+
+    def _set_batch_progress(self, value: int, text: str) -> None:
+        self.batch_progress_bar.setValue(value)
+        self.batch_progress_label.setText(text)
+        self.status_label.setText(text)
+        QApplication.processEvents()
+
+    def _generate_image_set(
+        self,
+        shop: Shop,
+        image_path: Path,
+        base_code: str,
+        sizes: list[SizeSpec],
+    ) -> int:
+        info = read_image_info(image_path)
+        shop.original_folder.mkdir(parents=True, exist_ok=True)
+        shop.output_folder.mkdir(parents=True, exist_ok=True)
+
+        original_copy = shop.original_folder / f"{image_path.stem}.jpg"
+        with Image.open(image_path) as original_image:
+            converted_original = ImageOps.exif_transpose(original_image).convert("RGB")
+            converted_original.save(original_copy, format="JPEG", quality=95)
+
+        created = 0
+        for size in sizes:
+            full_code = make_full_code(base_code, size)
+            output_dir = shop.output_folder / size.code_suffix
+            output_path = output_dir / f"{full_code}.jpg"
+            output_width, output_height = generate_sized_image(
+                original_copy,
+                output_path,
+                size,
+                label=full_code,
+            )
+            append_index_row(
+                ImageIndexRow(
+                    shop_name=shop.name,
+                    shop_prefix=shop.prefix,
+                    base_code=base_code,
+                    full_code=full_code,
+                    original_name=original_copy.name,
+                    original_path=original_copy,
+                    output_path=output_path,
+                    width_cm=size.width_cm,
+                    height_cm=size.height_cm,
+                    dpi=size.dpi,
+                    width_px=info.width_px,
+                    height_px=info.height_px,
+                    output_width_px=output_width,
+                    output_height_px=output_height,
+                    file_format="JPG",
+                    created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            )
+            created += 1
+        return created
 
     def _save_shop(self) -> None:
         try:
@@ -1070,7 +1241,7 @@ class MainWindow(QMainWindow):
         self.original_folder_input.clear()
         self.output_folder_input.clear()
         self.status_label.setText(f"已保存店铺：{shop.name}")
-        self._refresh_all()
+        self._refresh_shop_stats()
 
     def _selected_shop(self) -> Shop | None:
         index = self.upload_shop_combo.currentIndex()
@@ -1083,6 +1254,14 @@ class MainWindow(QMainWindow):
             SizeSpec(width_spin.value(), height_spin.value(), dpi_spin.value())
             for _row_frame, width_spin, height_spin, dpi_spin in self.size_rows
         ]
+
+    def _refresh_batch_table(self) -> None:
+        if not hasattr(self, "batch_table"):
+            return
+        self.batch_table.setRowCount(len(self.batch_base_codes))
+        for row, (path, base_code) in enumerate(self.batch_base_codes):
+            self.batch_table.setItem(row, 0, QTableWidgetItem(path.name))
+            self.batch_table.setItem(row, 1, QTableWidgetItem(base_code))
 
     def _add_size_row(self, width: int, height: int, dpi: int) -> None:
         row_frame = QFrame()
@@ -1128,14 +1307,21 @@ class MainWindow(QMainWindow):
     def _size_input(self, value: int, minimum: int, maximum: int) -> SizeNumberInput:
         return SizeNumberInput(value, minimum, maximum)
 
-    def _refresh_all(self) -> None:
+    def _refresh_all(self, load_library: bool = True) -> None:
         self.shops = load_shops()
         self._refresh_shop_combo()
         self._refresh_shops_table()
-        self._refresh_library()
+        if load_library:
+            self._refresh_library(load_thumbnails=False)
         rows = load_index_rows()
         self.shop_count_label.findChild(QLabel, "MetricValue").setText(str(len(self.shops)))
         self.image_count_label.findChild(QLabel, "MetricValue").setText(str(len(rows)))
+
+    def _refresh_shop_stats(self) -> None:
+        self.shops = load_shops()
+        self._refresh_shop_combo()
+        self._refresh_shops_table()
+        self.shop_count_label.findChild(QLabel, "MetricValue").setText(str(len(self.shops)))
 
     def _refresh_shop_combo(self) -> None:
         self.upload_shop_combo.clear()
@@ -1155,9 +1341,12 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.shop_table.setItem(row, column, QTableWidgetItem(value))
 
-    def _refresh_library(self) -> None:
+    def _refresh_library(self, load_thumbnails: bool = True) -> None:
+        self.library_deferred_load_requested = True
+        self._stop_library_thumbnail_worker()
         self._set_library_loading(True)
         rows = self._filtered_library_rows(load_index_rows())
+        self.library_rows = rows
         self.library_table.setSortingEnabled(False)
         self.library_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
@@ -1172,23 +1361,65 @@ class MainWindow(QMainWindow):
                 row.get("output_path", ""),
                 row.get("created_at", ""),
             ]
-            thumbnail = self._library_thumbnail(row.get("output_path", ""))
             thumbnail_label = QLabel()
             thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            if not thumbnail.isNull():
-                thumbnail_label.setPixmap(
-                    thumbnail.scaled(
-                        46,
-                        46,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                )
+            thumbnail_label.setText("加载中")
             self.library_table.setCellWidget(row_index, 0, thumbnail_label)
             for column, value in enumerate(values):
                 self.library_table.setItem(row_index, column, QTableWidgetItem(value))
         self.library_table.setSortingEnabled(True)
         self._set_library_loading(False)
+        if load_thumbnails:
+            self._start_library_thumbnail_worker()
+
+    def _start_library_thumbnail_worker(self) -> None:
+        jobs = build_thumbnail_jobs(self.library_rows)
+        if not jobs:
+            return
+
+        self.library_thumbnail_thread = QThread(self)
+        self.library_thumbnail_worker = LibraryThumbnailWorker(jobs, self._load_preview_pixmap)
+        self.library_thumbnail_worker.moveToThread(self.library_thumbnail_thread)
+        self.library_thumbnail_thread.started.connect(self.library_thumbnail_worker.run)
+        self.library_thumbnail_worker.thumbnail_loaded.connect(self._apply_library_thumbnail)
+        self.library_thumbnail_worker.thumbnail_failed.connect(self._apply_missing_library_thumbnail)
+        self.library_thumbnail_worker.finished.connect(self._finish_library_thumbnail_worker)
+        self.library_thumbnail_worker.finished.connect(self.library_thumbnail_thread.quit)
+        self.library_thumbnail_thread.finished.connect(self.library_thumbnail_thread.deleteLater)
+        self.library_thumbnail_thread.start()
+
+    def _stop_library_thumbnail_worker(self) -> None:
+        if self.library_thumbnail_thread is not None and self.library_thumbnail_thread.isRunning():
+            self.library_thumbnail_thread.quit()
+            self.library_thumbnail_thread.wait()
+        self.library_thumbnail_thread = None
+        self.library_thumbnail_worker = None
+
+    def _apply_library_thumbnail(self, row_index: int, pixmap: QPixmap) -> None:
+        if row_index >= self.library_table.rowCount():
+            return
+        thumbnail_label = QLabel()
+        thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumbnail_label.setPixmap(
+            pixmap.scaled(
+                46,
+                46,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        self.library_table.setCellWidget(row_index, 0, thumbnail_label)
+
+    def _apply_missing_library_thumbnail(self, row_index: int) -> None:
+        if row_index >= self.library_table.rowCount():
+            return
+        thumbnail_label = QLabel("无预览")
+        thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.library_table.setCellWidget(row_index, 0, thumbnail_label)
+
+    def _finish_library_thumbnail_worker(self) -> None:
+        self.library_thumbnail_worker = None
+        self.library_thumbnail_thread = None
 
     def _filtered_library_rows(self, rows: list[dict[str, str]]) -> list[dict[str, str]]:
         if not hasattr(self, "library_filters"):
@@ -1475,6 +1706,9 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         for button_index, button in enumerate(self.nav_buttons):
             button.setChecked(button_index == index)
+        if index == 3 and not self.library_deferred_load_requested:
+            self.library_deferred_load_requested = True
+            QTimer.singleShot(0, lambda: self._refresh_library(load_thumbnails=True))
 
     def _path_row(self, line_edit: QLineEdit) -> QWidget:
         container = QWidget()
@@ -1706,7 +1940,7 @@ class MainWindow(QMainWindow):
             save_shops(self.shops)
             self.editing_shop_prefix = updated_shop.prefix
             self.status_label.setText(f"已完成迁移：原图 {moved_original} 项，成品图 {moved_output} 项")
-            self._refresh_all()
+            self._refresh_shop_stats()
             self._load_shop_into_form(updated_shop)
             self._info("图片库迁移完成，图库索引也已同步更新。")
         except Exception as error:

@@ -46,6 +46,18 @@ pip install -r requirements.txt
 python -m pdd_art_manager.app
 ```
 
+## Build EXE
+
+```powershell
+.\build_exe.ps1
+```
+
+After packaging, the executable will be generated in:
+
+```text
+dist/装饰画图片管理/装饰画图片管理.exe
+```
+
 ## Local Data
 
 The app does not use a database. It stores local records in:
@@ -58,4 +70,3 @@ data/
 ```
 
 Image files are stored in the folders selected for each shop.
-
